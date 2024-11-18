@@ -1,0 +1,119 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="14.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{C283A2CC-975C-4614-9D02-FF5EE83FA60C}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <RootNamespace>AddinRibbon</RootNamespace>
+    <AssemblyName>AddinRibbon</AssemblyName>
+    <TargetFrameworkVersion>v4.8.1</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <TargetFrameworkProfile />
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\</OutputPath>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="AdWindows">
+      <HintPath>I:\Autodesk\Navisworks Manage 2025\AdWindows.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Autodesk.Navisworks.Api">
+      <HintPath>I:\Autodesk\Navisworks Manage 2025\Autodesk.Navisworks.Api.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="navisworks.gui.roamer">
+      <HintPath>I:\Autodesk\Navisworks Manage 2025\navisworks.gui.roamer.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Data.DataSetExtensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Xml" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="ApiSearchObject.cs" />
+    <Compile Include="ClAddin.cs" />
+    <Compile Include="Ctr\UcProperties.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="Ctr\UcProperties.Designer.cs">
+      <DependentUpon>UcProperties.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Ctr\UcUpdate.cs">
+      <SubType>UserControl</SubType>
+    </Compile>
+    <Compile Include="Ctr\UcUpdate.Designer.cs">
+      <DependentUpon>UcUpdate.cs</DependentUpon>
+    </Compile>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="AddinRibbon.xaml">
+      <Generator>MSBuild:UpdateDesignTimeXaml</Generator>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Ctr\UcProperties.resx">
+      <DependentUpon>UcProperties.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Ctr\UcUpdate.resx">
+      <DependentUpon>UcUpdate.cs</DependentUpon>
+    </EmbeddedResource>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="1_16.png" />
+    <Content Include="1_32.png" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <PropertyGroup>
+    <PostBuildEvent>set path=$(ProjectDir)AddinRibbon.xaml
+
+set addinPath=I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\
+set addinPath1=I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\en-US\
+
+mkdir "%25addinPath%25"
+mkdir "%25addinPath1%25"
+mkdir "images%25"
+
+copy /Y "%25path%25" "%25addinPath%25"
+copy /Y "%25path%25" "%25addinPath1%25"
+
+set img32=$(ProjectDir)logo_32x32.png
+set img16=$(ProjectDir)logo_16x16.png
+
+set images=I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\Images
+
+copy /Y "%25img32%25" "%25images%25"
+copy /Y "%25img16%25" "%25images%25"</PostBuildEvent>
+  </PropertyGroup>
+  <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
+       Other similar extension points exist, see Microsoft.Common.targets.
+  <Target Name="BeforeBuild">
+  </Target>
+  <Target Name="AfterBuild">
+  </Target>
+  -->
+</Project>
