@@ -7,7 +7,7 @@ namespace AddinRibbon.Dijkstra
         private static int _idCounter = 0;
 
         public int Id { get; private set; }
-        public string SectionName { get; set; }
+        public string TrayName { get; set; }
         public double X { get; set; }
         public double Y { get; set; }
         public double Z { get; set; }

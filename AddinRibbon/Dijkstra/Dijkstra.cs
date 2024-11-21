@@ -4,56 +4,59 @@ namespace AddinRibbon.Dijkstra
 {
     public class Dijkstra
     {
-        public static (List<Node> path, double totalDistance) FindShortestPath(Graph graph, Node start, Node end)
+        public static (List<Node> path, double totalDistance) FindShortestPath(Graph graph, Node startNode, Node endNode)
         {
             var distances = new Dictionary<Node, double>();
-            var previous = new Dictionary<Node, Node>();
+            var previousNodes = new Dictionary<Node, Node>();
             var priorityQueue = new PriorityQueue<Node>();
-            var visited = new HashSet<Node>();
 
-            distances[start] = 0;
-            priorityQueue.Enqueue(start, 0);
+            foreach (var node in graph.Nodes)
+            {
+                distances[node] = double.PositiveInfinity;
+                previousNodes[node] = null;
+            }
 
-            while (!priorityQueue.IsEmpty())
+            distances[startNode] = 0;
+            priorityQueue.Enqueue(startNode, 0);
+
+            while (priorityQueue.Count > 0)
             {
                 var currentNode = priorityQueue.Dequeue();
 
-                if (visited.Contains(currentNode))
-                    continue;
-
-                visited.Add(currentNode);
-
-                if (currentNode.Equals(end))
-                {
-                    // Reconstruct the path
-                    var path = new List<Node>();
-                    var node = end;
-                    while (node != null)
-                    {
-                        path.Add(node);
-                        previous.TryGetValue(node, out node);
-                    }
-                    path.Reverse();
-                    return (path, distances[end]);
-                }
+                if (currentNode == endNode)
+                    break;
 
                 foreach (var edge in currentNode.Edges)
                 {
-                    var neighbor = edge.ToNode;
-                    var newDist = distances[currentNode] + edge.Weight;
+                    var neighbor = edge.TargetNode;
+                    double newDist = distances[currentNode] + edge.Weight;
 
-                    if (!distances.ContainsKey(neighbor) || newDist < distances[neighbor])
+                    if (newDist < distances[neighbor])
                     {
                         distances[neighbor] = newDist;
-                        previous[neighbor] = currentNode;
+                        previousNodes[neighbor] = currentNode;
                         priorityQueue.Enqueue(neighbor, newDist);
                     }
                 }
             }
 
-            return (null, double.PositiveInfinity);
-        }
+            // Reconstruct the path
+            var path = new List<Node>();
+            var nodeToAdd = endNode;
 
+            if (previousNodes[endNode] == null)
+            {
+                return (null, double.PositiveInfinity); // No path found
+            }
+
+            while (nodeToAdd != null)
+            {
+                path.Insert(0, nodeToAdd);
+                nodeToAdd = previousNodes[nodeToAdd];
+            }
+
+            return (path, distances[endNode]);
+        }
 
     }
 }

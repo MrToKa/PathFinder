@@ -94,7 +94,6 @@
             this.cbPause.TabIndex = 8;
             this.cbPause.Text = "Pause";
             this.cbPause.UseVisualStyleBackColor = true;
-            this.cbPause.CheckedChanged += new System.EventHandler(this.cbPause_CheckedChanged);
             // 
             // lbPropName
             // 
@@ -161,7 +160,6 @@
             this.Name = "Algo";
             this.Padding = new System.Windows.Forms.Padding(10);
             this.Size = new System.Drawing.Size(800, 1500);
-            this.Load += new System.EventHandler(this.UcProperties_Load);
             this.ResumeLayout(false);
             this.PerformLayout();
 

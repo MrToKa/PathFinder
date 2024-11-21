@@ -2,7 +2,13 @@
 {
     public class Edge
     {
-        public Node ToNode { get; set; }
-        public double Weight { get; set; }
+        public Node TargetNode { get; }
+        public double Weight { get; }
+
+        public Edge(Node targetNode, double weight)
+        {
+            TargetNode = targetNode;
+            Weight = weight;
+        }
     }
 }

@@ -57,15 +57,14 @@ namespace AddinDockPanel
             //Create a tabControl to store more user controls (Aula/Lesson 6)
             var tc = new TabControl();
             tc.ParentChanged += SetDockStile;
-
-            //Store UcUpdate in the TabControl (Aula/Lesson 6)
+                        
             var tp2 = new TabPage("Out Properties");
             tp2.Controls.Add(new UcProperties());
             tc.TabPages.Add(tp2);
 
-            var tp1 = new TabPage("Algo");
-            tp1.Controls.Add(new Algo());
-            tc.TabPages.Add(tp1);
+            //var tp1 = new TabPage("Algo");
+            //tp1.Controls.Add(new Algo());
+            //tc.TabPages.Add(tp1);
 
             return tc;
         }

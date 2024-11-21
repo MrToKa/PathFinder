@@ -6,6 +6,7 @@ using Autodesk.Navisworks.Api;
 using NavisworksApp = Autodesk.Navisworks.Api.Application;
 using Autodesk.Navisworks.Api.Plugins;
 using static System.Windows.Forms.LinkLabel;
+using AddinRibbon.Dijkstra;
 
 namespace AddinRibbon.Ctr
 {
@@ -49,7 +50,7 @@ namespace AddinRibbon.Ctr
         {
             try
             {
-                NavisworksApp.ActiveDocument.CurrentSelection.Changed += GetProperties;
+                //NavisworksApp.ActiveDocument.CurrentSelection.Changed += GetProperties;
             }
             catch (Exception)
             {
@@ -74,9 +75,9 @@ namespace AddinRibbon.Ctr
                 {
                     lines.Add(item.DisplayName);
                     lines.Add("BoundingBox Point");
-                    lines.Add(string.Concat(".   X:", item.BoundingBox().Center.X.ToString("0.000")));
-                    lines.Add(string.Concat(".   Y:", item.BoundingBox().Center.Y.ToString("0.000")));
-                    lines.Add(string.Concat(".   Z:", item.BoundingBox().Center.Z.ToString("0.000")));
+                    lines.Add(string.Concat("X:", item.BoundingBox().Center.X.ToString("0.000")));
+                    lines.Add(string.Concat("Y:", item.BoundingBox().Center.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Z:", item.BoundingBox().Center.Z.ToString("0.000")));
 
                     lines.Add(item.BoundingBox().Min.X.ToString("0.000"));
                     lines.Add(item.BoundingBox().Min.Y.ToString("0.000"));
@@ -88,49 +89,13 @@ namespace AddinRibbon.Ctr
                     lines.Add(item.BoundingBox().Size.Y.ToString("0.000"));
                     lines.Add(item.BoundingBox().Size.Z.ToString("0.000"));
 
-                    lines.Add(Environment.NewLine);
-
                     //AddChildrenProperties(item.Children, lines, 1);
                     //add children points to list
                     AddChildrenPoints(item.Children, pointsList, 1);
                     lines.Add(Environment.NewLine);
 
-                    lines.Add("Center Points List");
-                    foreach (var point in pointsList)
-                    {
-                        lines.Add(string.Concat("Point: ", point.X.ToString("0.000"), ", ", point.Y.ToString("0.000"), ", ", point.Z.ToString("0.000")));
-                    }
+                    AddChildrenNodesCode(lines, item);
 
-                    lines.Add(Environment.NewLine);
-                    lines.Add("Total distance from first to last");
-                    //calculate distance trough the center points
-
-                    var totalDistance = 0.0;
-                    for (int i = 0; i < pointsList.Count - 1; i++)
-                    {
-                        totalDistance += pointsList[i].DistanceTo(pointsList[i + 1]);
-                        lines.Add(string.Concat("Distance: ", pointsList[i].DistanceTo(pointsList[i + 1]).ToString("0.000")));
-                    }
-                    lines.Add(string.Concat("Total Distance: ", totalDistance.ToString("0.000")));
-
-                    //lines.Add(item.BoundingBox().Min.X.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Min.Y.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Min.Z.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Max.X.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Max.Y.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Max.Z.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Size.X.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Size.Y.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Size.Z.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().SurfaceArea.ToString("0.00"));
-                    //lines.Add(item.BoundingBox().Volume.ToString("0.00"));
-
-                    lines.Add("Definition points");
-                    var medianPoints = CalculateMedianPoints(item.BoundingBox());
-                    foreach (var point in medianPoints)
-                    {
-                        lines.Add(string.Concat("Point: ", point.X.ToString("0.000"), ", ", point.Y.ToString("0.000"), ", ", point.Z.ToString("0.000")));
-                    }
                 }
 
                 tbProp.Text = string.Join(Environment.NewLine, lines);
@@ -261,6 +226,26 @@ namespace AddinRibbon.Ctr
             return pointsList;
         }
 
+        private void AddChildrenNodesCode(List<string> lines, ModelItem item)
+        {
+            foreach (var child in item.Children)
+            {
+                if (!child.Children.Any())
+                {
+                    //Check if the child.DisplayName is null or empty string
+                    if (string.IsNullOrEmpty(child.DisplayName))
+                    {
+                        continue;
+                    }
+                    AddNodeCode(lines, child, CalculateMedianPoints(child.BoundingBox()));
+                }
+                else
+                {
+                    AddChildrenNodesCode(lines, child);
+                }
+            }
+        }
+
         private void AddChildrenPoints(IEnumerable<ModelItem> children, List<Point3D> pointsList, int level)
         {
             foreach (var child in children)
@@ -296,100 +281,45 @@ namespace AddinRibbon.Ctr
             }
         }
 
-        ///// <summary>
-        ///// Aula/Lesson 7
-        ///// </summary>
-        //private void btFind_MouseUp(object sender, MouseEventArgs e)
-        //{
-
-        //    try
-        //    {
-        //        var result = new List<ModelItem>();
-
-        //        foreach (var item in NavisworksApp.ActiveDocument.CurrentSelection.SelectedItems)
-        //        {
-        //            var cat = item.DescendantsAndSelf.Where(i => i.PropertyCategories.FindCategoryByDisplayName(tbFromElement.Text) != null);
-
-        //            var prop = cat.Where(m => m.PropertyCategories.FindCategoryByDisplayName(tbFromElement.Text).
-        //                                    Properties.FindPropertyByDisplayName(tbToElement.Text) != null);
-
-        //            result.AddRange(prop.Where(m => GetPropValue(m.PropertyCategories.FindCategoryByDisplayName(tbFromElement.Text).
-        //                                    Properties.FindPropertyByDisplayName(tbToElement.Text)) == tbValueName.Text));
-
-        //        }
-
-        //        NavisworksApp.ActiveDocument.CurrentSelection.Clear();
-        //        NavisworksApp.ActiveDocument.CurrentSelection.AddRange(result);
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        MessageBox.Show(ex.Message);
-        //    }
-
-        //}
-
-        private void UcProperties_Load(object sender, EventArgs e)
-        {
-
-        }
-
-        private void cbPause_CheckedChanged(object sender, EventArgs e)
-        {
-
-        }
-
         private void btnFindPath_Click(object sender, EventArgs e)
         {
             if (cbPause.Checked) return;
 
             try
             {
-                var navApp = NavisworksApp.ActiveDocument;
+                GetProperties(null, null);
 
-                string fromInputField = tbFromElement.Text;
-                string toInputField = tbToElement.Text;
+                //var navApp = NavisworksApp.ActiveDocument;
 
-                ModelItemCollection searchResults = new ModelItemCollection();
+                //string fromInputField = tbFromElement.Text;
+                //string toInputField = tbToElement.Text;
 
-                foreach (ModelItem modelItem in NavisworksApp.ActiveDocument.Models.CreateCollectionFromRootItems().DescendantsAndSelf)
-                {
-                    if ((modelItem.DisplayName == fromInputField || modelItem.DisplayName == toInputField) && !modelItem.AncestorsAndSelf.Any(p => p.IsHidden))
-                    {
-                        searchResults.Add(modelItem);
-                    }
-                }
+                //ModelItemCollection searchResults = new ModelItemCollection();
 
-                ModelItem searchResultfromInputField = searchResults.FirstOrDefault(m => m.DisplayName == fromInputField);
-                ModelItem searchResulttoInputField = searchResults.FirstOrDefault(m => m.DisplayName == toInputField);
-
-                //
-
-                //string lines = string.Empty;
-
-                //foreach (var item in NavisworksApp.ActiveDocument.CurrentSelection.SelectedItems)
+                //foreach (ModelItem modelItem in NavisworksApp.ActiveDocument.Models.CreateCollectionFromRootItems().DescendantsAndSelf)
                 //{
-                //    lines += "X: " + item.BoundingBox().Center.X.ToString("0.000");
-                //    lines += " Y: " + item.BoundingBox().Center.Y.ToString("0.000");
-                //    lines += " Z: " + item.BoundingBox().Center.Z.ToString("0.000");
+                //    if ((modelItem.DisplayName == fromInputField || modelItem.DisplayName == toInputField) && !modelItem.AncestorsAndSelf.Any(p => p.IsHidden))
+                //    {
+                //        searchResults.Add(modelItem);
+                //    }
                 //}
 
-                //string fromLines = lines;
+                //ModelItem searchResultfromInputField = searchResults.FirstOrDefault(m => m.DisplayName == fromInputField);
+                //ModelItem searchResulttoInputField = searchResults.FirstOrDefault(m => m.DisplayName == toInputField);
 
-                //
+                //string fromLines = string.Empty;
+                //fromLines += "X: " + searchResultfromInputField.BoundingBox().Center.X.ToString("0.000");
+                //fromLines += " Y: " + searchResultfromInputField.BoundingBox().Center.Y.ToString("0.000");
+                //fromLines += " Z: " + searchResultfromInputField.BoundingBox().Center.Z.ToString("0.000");
 
-                string fromLines = string.Empty;
-                fromLines += "X: " + searchResultfromInputField.BoundingBox().Center.X.ToString("0.000");
-                fromLines += " Y: " + searchResultfromInputField.BoundingBox().Center.Y.ToString("0.000");
-                fromLines += " Z: " + searchResultfromInputField.BoundingBox().Center.Z.ToString("0.000");
+                //textBoxFrom.Text = fromLines;
 
-                textBoxFrom.Text = fromLines;
+                //string toLines = string.Empty;
+                //toLines += "X: " + searchResulttoInputField.BoundingBox().Center.X.ToString("0.000");
+                //toLines += " Y: " + searchResulttoInputField.BoundingBox().Center.Y.ToString("0.000");
+                //toLines += " Z: " + searchResulttoInputField.BoundingBox().Center.Z.ToString("0.000");
 
-                string toLines = string.Empty;
-                toLines += "X: " + searchResulttoInputField.BoundingBox().Center.X.ToString("0.000");
-                toLines += " Y: " + searchResulttoInputField.BoundingBox().Center.Y.ToString("0.000");
-                toLines += " Z: " + searchResulttoInputField.BoundingBox().Center.Z.ToString("0.000");
-
-                textBoxTo.Text = toLines;
+                //textBoxTo.Text = toLines;
 
             }
             catch (Exception ex)
@@ -398,20 +328,20 @@ namespace AddinRibbon.Ctr
             }
         }
 
-        private static string GetPropValue(DataProperty prop)
+        private void AddNodeCode(List<string> lines, ModelItem item, List<Point3D> medianPoints)
         {
-            try
+            lines.Add("Node Code:");
+            lines.Add($"{item.DisplayName}");
+            lines.Add("--------------------");
+            lines.Add($"var {item.DisplayName.Substring(item.DisplayName.Length - 4).ToLower()}nodes = new List<Node>");
+            lines.Add("{");
+            foreach (var point in medianPoints)
             {
-                return prop.Value.IsDisplayString ? prop.Value.ToDisplayString() :
-                                                            prop.Value.ToString().Split(':')[1];
+                lines.Add($"new Node {{ TrayName = \"{item.DisplayName.Substring(item.DisplayName.Length - 4)}\", X = {point.X.ToString("0.000")}, Y = {point.Y.ToString("0.000")}, Z = {point.Z.ToString("0.000")} }},");
             }
-            catch (Exception)
-            {
-                return "Prop Error";
-            }
-
+            lines.Add("};");
+            lines.Add($"trays[\"{item.DisplayName.Substring(item.DisplayName.Length - 4)}\"] = {item.DisplayName.Substring(item.DisplayName.Length - 4).ToLower()}nodes;");
+            lines.Add("--------------------");
         }
-
-
     }
 }
