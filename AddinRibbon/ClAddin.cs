@@ -63,6 +63,10 @@ namespace AddinDockPanel
             tp2.Controls.Add(new UcProperties());
             tc.TabPages.Add(tp2);
 
+            var tp1 = new TabPage("Algo");
+            tp1.Controls.Add(new Algo());
+            tc.TabPages.Add(tp1);
+
             return tc;
         }
 
