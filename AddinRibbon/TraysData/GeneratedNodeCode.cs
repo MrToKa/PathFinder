@@ -429,7 +429,6 @@ namespace AddinRibbon.TraysData
             return trays;
         }   
 
-
         public static List<Node> GetBNodes()
         {
             var allSections = CoordinatesData();

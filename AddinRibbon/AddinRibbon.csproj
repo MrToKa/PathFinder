@@ -57,6 +57,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ApiSearchObject.cs" />
+    <Compile Include="ChildrenService.cs" />
     <Compile Include="ClAddin.cs" />
     <Compile Include="Ctr\Algo.cs">
       <SubType>UserControl</SubType>
@@ -82,7 +83,10 @@
     <Compile Include="Dijkstra\Node.cs" />
     <Compile Include="Dijkstra\PriorityQueue.cs" />
     <Compile Include="Dijkstra\QueueItem.cs" />
+    <Compile Include="ItemService.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Shapes\Shape.cs" />
+    <Compile Include="Shapes\ShapeType.cs" />
     <Compile Include="TraysData\GeneratedNodeCode.cs" />
   </ItemGroup>
   <ItemGroup>
