@@ -17,7 +17,7 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\</OutputPath>
+    <OutputPath>..\..\Manage 2023\Navisworks Manage 2023\Plugins\AddinRibbon\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -33,15 +33,15 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="AdWindows">
-      <HintPath>I:\Autodesk\Navisworks Manage 2025\AdWindows.dll</HintPath>
+      <HintPath>..\..\Manage 2023\Navisworks Manage 2023\AdWindows.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Autodesk.Navisworks.Api">
-      <HintPath>I:\Autodesk\Navisworks Manage 2025\Autodesk.Navisworks.Api.dll</HintPath>
+      <HintPath>..\..\Manage 2023\Navisworks Manage 2023\Autodesk.Navisworks.Api.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="navisworks.gui.roamer">
-      <HintPath>I:\Autodesk\Navisworks Manage 2025\navisworks.gui.roamer.dll</HintPath>
+      <HintPath>..\..\Manage 2023\Navisworks Manage 2023\navisworks.gui.roamer.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
@@ -114,8 +114,8 @@
   <PropertyGroup>
     <PostBuildEvent>set path=$(ProjectDir)AddinRibbon.xaml
 
-set addinPath=I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\
-set addinPath1=I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\en-US\
+set addinPath=D:\Manage 2023\Navisworks Manage 2023\Plugins\AddinRibbon
+set addinPath1=D:\Manage 2023\Navisworks Manage 2023\Plugins\AddinRibbon\en-US\
 
 mkdir "%25addinPath%25"
 mkdir "%25addinPath1%25"
@@ -127,7 +127,7 @@ copy /Y "%25path%25" "%25addinPath1%25"
 set img32=$(ProjectDir)logo_32x32.png
 set img16=$(ProjectDir)logo_16x16.png
 
-set images=I:\Autodesk\Navisworks Manage 2025\Plugins\AddinRibbon\Images
+set images=D:\Manage 2023\Navisworks Manage 2023\Plugins\AddinRibbon\Images
 
 copy /Y "%25img32%25" "%25images%25"
 copy /Y "%25img16%25" "%25images%25"</PostBuildEvent>

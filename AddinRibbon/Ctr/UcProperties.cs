@@ -73,19 +73,18 @@ namespace AddinRibbon.Ctr
                 {
                     lines.Add(item.DisplayName);
                     lines.Add("BoundingBox Point");
-                    lines.Add(string.Concat("X:", item.BoundingBox().Center.X.ToString("0.000")));
-                    lines.Add(string.Concat("Y:", item.BoundingBox().Center.Y.ToString("0.000")));
-                    lines.Add(string.Concat("Z:", item.BoundingBox().Center.Z.ToString("0.000")));
-
-                    lines.Add(item.BoundingBox().Min.X.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Min.Y.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Min.Z.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Max.X.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Max.Y.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Max.Z.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Size.X.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Size.Y.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Size.Z.ToString("0.000"));
+                    lines.Add(string.Concat("Box-X:", item.BoundingBox().Center.X.ToString("0.000")));
+                    lines.Add(string.Concat("Box-Y:", item.BoundingBox().Center.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Box-Z:", item.BoundingBox().Center.Z.ToString("0.000")));
+                    lines.Add(string.Concat("Min-X:",item.BoundingBox().Min.X.ToString("0.000")));
+                    lines.Add(string.Concat("Min-Y:",item.BoundingBox().Min.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Min-Z:",item.BoundingBox().Min.Z.ToString("0.000")));
+                    lines.Add(string.Concat("Max-X:",item.BoundingBox().Max.X.ToString("0.000")));
+                    lines.Add(string.Concat("Max-Y:",item.BoundingBox().Max.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Max-Z:",item.BoundingBox().Max.Z.ToString("0.000")));
+                    lines.Add(string.Concat("Size-X:",item.BoundingBox().Size.X.ToString("0.000")));
+                    lines.Add(string.Concat("Sizy-Y:",item.BoundingBox().Size.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Size-Z:", item.BoundingBox().Size.Z.ToString("0.000")));
                     lines.Add(Environment.NewLine);
 
                     var childrenService = new ChildrenService();
