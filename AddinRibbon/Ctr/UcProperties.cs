@@ -5,6 +5,8 @@ using System.Linq;
 using Autodesk.Navisworks.Api;
 using NavisworksApp = Autodesk.Navisworks.Api.Application;
 using Autodesk.Navisworks.Api.Plugins;
+using AddinRibbon.Shapes;
+using AddinRibbon.Services;
 
 namespace AddinRibbon.Ctr
 {
@@ -89,10 +91,22 @@ namespace AddinRibbon.Ctr
                     var childrenService = new ChildrenService();
                     childrenService.AddChildrenPoints(item.Children, pointsList, 1);
 
+                    var childrens = childrenService.GetDeepestChildrens(item);
+
+                    var branches = new Dictionary<int, Shape>();
+                    for (int i = 0; i < childrens.Count; i++)
+                    {
+                        int index = i + 1;
+                        branches.Add(index, new Shape(childrens[i].DisplayName, childrens[i]));
+                    }
+
+                    var shapeService = new ShapeService();
+                    shapeService.AssignShapesTypes(branches);
+
                     //var itemService = new ItemService();
                     //lines.Add(childrenService.AddChildrenNodesCode(item, itemService));
 
-
+                    childrenService.AddChildrenProperties(item.Children, lines, 1);
 
                 }
 

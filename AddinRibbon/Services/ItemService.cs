@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System;
 
-namespace AddinRibbon
+namespace AddinRibbon.Services
 {
     public class ItemService
     {
@@ -128,12 +128,14 @@ namespace AddinRibbon
 
         public string AddNodeCode(ModelItem item, List<Point3D> medianPoints)
         {
-            var lines = new List<string>();
-            lines.Add("Node Code:");
-            lines.Add($"{item.DisplayName}");
-            lines.Add("--------------------");
-            lines.Add($"var {item.DisplayName.Substring(item.DisplayName.Length - 4).ToLower()}nodes = new List<Node>");
-            lines.Add("{");
+            var lines = new List<string>
+            {
+                "Node Code:",
+                $"{item.DisplayName}",
+                "--------------------",
+                $"var {item.DisplayName.Substring(item.DisplayName.Length - 4).ToLower()}nodes = new List<Node>",
+                "{"
+            };
             foreach (var point in medianPoints)
             {
                 lines.Add($"new Node {{ TrayName = \"{item.DisplayName.Substring(item.DisplayName.Length - 4)}\", X = {point.X.ToString("0.000")}, Y = {point.Y.ToString("0.000")}, Z = {point.Z.ToString("0.000")} }},");

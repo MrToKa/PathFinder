@@ -2,7 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 
-namespace AddinRibbon
+namespace AddinRibbon.Services
 {
     public class ChildrenService
     {
@@ -49,18 +49,35 @@ namespace AddinRibbon
             {
                 if (!child.Children.Any())
                 {
-                    var indent = new string('.', level * 4);
+                    var indent = new string('.', level * 1);
                     lines.Add(string.Concat(indent, child.DisplayName));
-                    lines.Add(string.Concat(indent, ".   BoundingBox Point"));
-                    lines.Add(string.Concat(indent, ".   .   X:", child.BoundingBox().Center.X.ToString("0.000")));
-                    lines.Add(string.Concat(indent, ".   .   Y:", child.BoundingBox().Center.Y.ToString("0.000")));
-                    lines.Add(string.Concat(indent, ".   .   Z:", child.BoundingBox().Center.Z.ToString("0.000")));
+                    lines.Add(string.Concat(indent, ".   BoundingBox Center Point - ", "X: ", child.BoundingBox().Center.X.ToString("0.000") + " Y: ", child.BoundingBox().Center.Y.ToString("0.000") + " Z: ", child.BoundingBox().Center.Z.ToString("0.000")));
+                    lines.Add(string.Concat(indent, ".   BoundingBox Min Point - ", "X: ", child.BoundingBox().Min.X.ToString("0.000") + " Y: ", child.BoundingBox().Min.Y.ToString("0.000") + " Z: ", child.BoundingBox().Min.Z.ToString("0.000")));
+                    lines.Add(string.Concat(indent, ".   BoundingBox Max Point - ", "X: ", child.BoundingBox().Max.X.ToString("0.000") + " Y: ", child.BoundingBox().Max.Y.ToString("0.000") + " Z: ", child.BoundingBox().Max.Z.ToString("0.000")));
+                    lines.Add(string.Concat(indent, ".   BoundingBox Size - ", "X: ", child.BoundingBox().Size.X.ToString("0.000") + " Y: ", child.BoundingBox().Size.Y.ToString("0.000") + " Z: ", child.BoundingBox().Size.Z.ToString("0.000")));
                 }
                 else
                 {
                     AddChildrenProperties(child.Children, lines, level + 1);
                 }
             }
+        }
+
+        public List<ModelItem> GetDeepestChildrens(ModelItem item)
+        {
+            var children = new List<ModelItem>();
+            foreach (var child in item.Children)
+            {
+                if (!child.Children.Any())
+                {
+                    children.Add(child);
+                }
+                else
+                {
+                    children.AddRange(GetDeepestChildrens(child));
+                }
+            }
+            return children;
         }
     }
 }
