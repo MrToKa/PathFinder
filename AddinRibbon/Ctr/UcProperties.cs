@@ -10,19 +10,10 @@ using AddinRibbon.Services;
 
 namespace AddinRibbon.Ctr
 {
-    /// <summary>
-    /// Aula/Lesson 6
-    /// </summary>
-    /// 
-
     [DockPanePlugin(800, 1500, AutoScroll = true, MinimumHeight = 100, MinimumWidth = 200)]
 
     public partial class UcProperties : UserControl
     {
-
-        /// <summary>
-        /// Aula/Lesson 6
-        /// </summary>
         public UcProperties()
         {
             InitializeComponent();
@@ -31,21 +22,12 @@ namespace AddinRibbon.Ctr
             NavisworksApp.MainDocumentChanged += ListenSelection;
         }
 
-        /// <summary>
-        /// Aula/Lesson 3
-        /// </summary>
-        /// <param name="e"></param>
         protected override void OnParentChanged(EventArgs e)
         {
             base.OnParentChanged(e);
             Dock = DockStyle.None;
         }
 
-        /// <summary>
-        /// Aula/Lesson 6
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void ListenSelection(object sender, EventArgs e)
         {
             try
@@ -102,8 +84,8 @@ namespace AddinRibbon.Ctr
                     var shapeService = new ShapeService();
                     shapeService.AssignShapesTypes(branches);
 
-                    //var itemService = new ItemService();
-                    //lines.Add(childrenService.AddChildrenNodesCode(item, itemService));
+                    var itemService = new ItemService();
+                    lines.Add(childrenService.AddChildrenNodesCode(item, itemService));
 
                     childrenService.AddChildrenProperties(item.Children, lines, 1);
 

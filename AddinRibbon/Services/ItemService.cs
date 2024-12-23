@@ -108,13 +108,22 @@ namespace AddinRibbon.Services
                 // Interval between points
                 double interval = 0.300;
 
-                // Number of points
-                int numberOfPoints = (int)(totalDistance / interval) + 1;
+                // Calculate how many full intervals fit into the total distance
+                int stepsCount = (int)Math.Floor(totalDistance / interval);
 
-                // Generate points
-                for (int i = 0; i <= numberOfPoints; i++)
+                for (int i = 0; i <= stepsCount; i++)
                 {
-                    double t = (double)i / numberOfPoints;
+                    // Distance traveled so far
+                    double currentDistance = i * interval;
+
+                    // For the very last iteration, clamp to totalDistance
+                    if (i == stepsCount)
+                        currentDistance = totalDistance;
+
+                    // Calculate the fraction (t) of the journey
+                    double t = currentDistance / totalDistance;
+
+                    // Interpolate coordinates
                     double x = startPoint.X + t * (endPoint.X - startPoint.X);
                     double y = startPoint.Y + t * (endPoint.Y - startPoint.Y);
                     double z = startPoint.Z + t * (endPoint.Z - startPoint.Z);

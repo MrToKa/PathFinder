@@ -24,6 +24,7 @@ namespace AddinRibbon.Services
 
             if (branches.Count == 1)
             {
+                //Check the shape type first!! Then assign the direction
                 branches[1].Direction = SingleBranchDirection(branches[1]);
                 return;
             }
@@ -38,7 +39,6 @@ namespace AddinRibbon.Services
         //private Direction FirstBranchDirection(Dictionary<int, Shape> branch)
         //{
         //}
-
         //private Direction MiddleBranchDirection(Dictionary<int, Shape> branch)
         //{
         //}
