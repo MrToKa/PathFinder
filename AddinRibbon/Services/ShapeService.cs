@@ -34,20 +34,16 @@ namespace AddinRibbon.Services
 
             for (int i = 0; i < branches.Count; i++)
             {
-                if (i == 0)
-                {
-                    var firstTwoBranches = new Dictionary<int, Shape> { { 1, branches[1] }, { 2, branches[2] } };
 
-                    branches[1].Direction = BranchDirection(firstTwoBranches);
-
-                }
-                else if (i == branches.Count - 1)
+                if (i == branches.Count - 1)
                 {
                     //branches[i + 1].Direction = LastBranchDirection(branches);
                 }
                 else
                 {
-                    //branches[i + 1].Direction = MiddleBranchDirection(branches);
+                    var branchesToCompare = new Dictionary<int, Shape> { { 1, branches[i + 1] }, { 2, branches[i + 2] } };
+
+                    branches[i + 1].Direction = BranchDirection(branchesToCompare);
                 }
 
             }
@@ -75,44 +71,36 @@ namespace AddinRibbon.Services
                 //The height of all the shapes is 100mm
                 //The lenght of the shape is the distance between the touching side and the opposite side of the Bounding Box
 
-                List<Point3D> commonPoints = new List<Point3D>();
-                foreach (var point in firstBranchBoxPoints)
-                {
-                    var pointCoordinates = new double[] { point.X, point.Y, point.Z };
-
-                    foreach (var point2 in secondBranchBoxPoints)
-                    {
-                        var point2Coordinates = new double[] { point2.X, point2.Y, point2.Z };
-                        if (pointCoordinates[0] == point2Coordinates[0] && pointCoordinates[1] == point2Coordinates[1] && pointCoordinates[2] == point2Coordinates[2])
-                        {
-                            commonPoints.Add(point);
-                        }
-                    }
-                }
+                List<Point3D> commonPoints = FindCommonPoints(firstBranchBoxPoints, secondBranchBoxPoints);
 
                 if (commonPoints.Count == 4)
                 {
                     // the two shapes are FTUBE and are aligned with the same axis
                     // the direction is the vector from the center of the first shape to the center of the second shape
-                    return firstBranchBox.Center.X > secondBranchBox.Center.X ? Direction.EastWest :
-                           firstBranchBox.Center.X < secondBranchBox.Center.X ? Direction.WestEast :
-                           firstBranchBox.Center.Y > secondBranchBox.Center.Y ? Direction.NorthSouth :
-                           firstBranchBox.Center.Y < secondBranchBox.Center.Y ? Direction.SouthNorth :
-                           firstBranchBox.Center.Z > secondBranchBox.Center.Z ? Direction.UpDown : Direction.DownUp;
+                    return Math.Round(firstBranchBox.Center.X, 3) > Math.Round(secondBranchBox.Center.X, 3) ? Direction.EastWest :
+                           Math.Round(firstBranchBox.Center.X, 3) < Math.Round(secondBranchBox.Center.X, 3) ? Direction.WestEast :
+                           Math.Round(firstBranchBox.Center.Y, 3) > Math.Round(secondBranchBox.Center.Y, 3) ? Direction.NorthSouth :
+                           Math.Round(firstBranchBox.Center.Y, 3) < Math.Round(secondBranchBox.Center.Y, 3) ? Direction.SouthNorth :
+                           Math.Round(firstBranchBox.Center.Z, 3) > Math.Round(secondBranchBox.Center.Z, 3) ? Direction.UpDown : Direction.DownUp;
                 }
 
                 if (commonPoints.Count == 2)
                 {
-                    var firstBBoxCenter = firstBranchBox.Center;
-                    var secondBBoxCenter = secondBranchBox.Center;
+                    // The direction is the bigges offset on the X,Y or Z axis between the center points.
+                    var vector = firstBranchBox.Center - secondBranchBox.Center;
 
-                    var vector = new Point3D(secondBBoxCenter.X - firstBBoxCenter.X, secondBBoxCenter.Y - firstBBoxCenter.Y, secondBBoxCenter.Z - firstBBoxCenter.Z);
-
-                    return vector.X > vector.Y ? Direction.EastWest :
-                        vector.X < vector.Y ? Direction.WestEast :
-                        vector.Y > vector.Z ? Direction.NorthSouth :
-                        vector.Y < vector.Z ? Direction.SouthNorth :
-                        vector.Z > vector.X ? Direction.UpDown : Direction.DownUp;
+                    if (Math.Abs(vector.X) > Math.Abs(vector.Y) && Math.Abs(vector.X) > Math.Abs(vector.Z))
+                    {
+                        return vector.X > 0 ? Direction.EastWest : Direction.WestEast;
+                    }
+                    else if (Math.Abs(vector.Y) > Math.Abs(vector.X) && Math.Abs(vector.Y) > Math.Abs(vector.Z))
+                    {
+                        return vector.Y > 0 ? Direction.NorthSouth : Direction.SouthNorth;
+                    }
+                    else if (Math.Abs(vector.Z) > Math.Abs(vector.X) && Math.Abs(vector.Z) > Math.Abs(vector.Y))
+                    {
+                        return vector.Z > 0 ? Direction.UpDown : Direction.DownUp;
+                    }
                 }
 
                 return Direction.Unknown;
@@ -124,9 +112,75 @@ namespace AddinRibbon.Services
 
 
             }
-            //else if (firstBranch.ShapeType == ShapeType.BEND)
-            //{
-            //}
+
+            else if (firstBranch.ShapeType == ShapeType.BEND)
+            {
+                List<Point3D> commonPoints = FindCommonPoints(firstBranchBoxPoints, secondBranchBoxPoints);
+
+                if (commonPoints.Count == 2)
+                {
+                    var vector = firstBranchBox.Center - secondBranchBox.Center;
+
+                    if (Math.Abs(vector.Z) == 0)
+                    {
+                        if (Math.Abs(vector.X) > Math.Abs(vector.Y) && vector.Y > 0)
+                        {
+                            return vector.X > 0 ? Direction.NorthEast : Direction.NorthWest;
+                        }
+                        if (Math.Abs(vector.X) > Math.Abs(vector.Y) && vector.Y < 0)
+                        {
+                            return vector.X > 0 ? Direction.SouthEast : Direction.SouthWest;
+                        }
+                        else if (Math.Abs(vector.Y) > Math.Abs(vector.X) && vector.X > 0)
+                        {
+                            return vector.Y > 0 ? Direction.NorthEast : Direction.SouthEast;
+                        }
+                        else if (Math.Abs(vector.Y) > Math.Abs(vector.X) && vector.X < 0)
+                        {
+                            return vector.Y > 0 ? Direction.NorthWest : Direction.SouthWest;
+                        }
+                    }
+                    if (Math.Abs(vector.Y) == 0)
+                    {
+                        if (Math.Abs(vector.X) > Math.Abs(vector.Z) && vector.Z > 0)
+                        {
+                            return vector.X > 0 ? Direction.UpEast : Direction.UpWest;
+                        }
+                        if (Math.Abs(vector.X) > Math.Abs(vector.Z) && vector.Z < 0)
+                        {
+                            return vector.X > 0 ? Direction.DownEast : Direction.DownWest;
+                        }
+                        else if (Math.Abs(vector.Z) > Math.Abs(vector.X) && vector.X > 0)
+                        {
+                            return vector.Z > 0 ? Direction.UpEast : Direction.DownEast;
+                        }
+                        else if (Math.Abs(vector.Z) > Math.Abs(vector.X) && vector.X < 0)
+                        {
+                            return vector.Z > 0 ? Direction.UpWest : Direction.DownWest;
+                        }
+                    }
+                    if ((Math.Abs(vector.X) == 0))
+                    {
+                        if (Math.Abs(vector.Y) > Math.Abs(vector.Z) && vector.Z > 0)
+                        {
+                            return vector.Y > 0 ? Direction.UpNorth : Direction.UpSouth;
+                        }
+                        if (Math.Abs(vector.Y) > Math.Abs(vector.Z) && vector.Z < 0)
+                        {
+                            return vector.Y > 0 ? Direction.DownNorth : Direction.DownSouth;
+                        }
+                        else if (Math.Abs(vector.Z) > Math.Abs(vector.Y) && vector.Y > 0)
+                        {
+                            return vector.Z > 0 ? Direction.UpNorth : Direction.DownNorth;
+                        }
+                        else if (Math.Abs(vector.Z) > Math.Abs(vector.Y) && vector.Y < 0)
+                        {
+                            return vector.Z > 0 ? Direction.UpSouth : Direction.DownSouth;
+                        }
+                    }
+                }
+            }
+
             //else if (firstBranch.ShapeType == ShapeType.TEE)
             //{
             //}
@@ -135,6 +189,26 @@ namespace AddinRibbon.Services
             //}
             return Direction.Unknown;
 
+        }
+
+        private static List<Point3D> FindCommonPoints(List<Point3D> firstBranchBoxPoints, List<Point3D> secondBranchBoxPoints)
+        {
+            List<Point3D> commonPoints = new List<Point3D>();
+            foreach (var point in firstBranchBoxPoints)
+            {
+                var pointCoordinates = new double[] { point.X, point.Y, point.Z };
+
+                foreach (var point2 in secondBranchBoxPoints)
+                {
+                    var point2Coordinates = new double[] { point2.X, point2.Y, point2.Z };
+                    if (pointCoordinates[0] == point2Coordinates[0] && pointCoordinates[1] == point2Coordinates[1] && pointCoordinates[2] == point2Coordinates[2])
+                    {
+                        commonPoints.Add(point);
+                    }
+                }
+            }
+
+            return commonPoints;
         }
 
         private List<Point3D> GetBBoxEdgeCoordinates(BoundingBox3D boundingBox)
