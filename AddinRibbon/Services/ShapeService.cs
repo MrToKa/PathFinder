@@ -45,7 +45,6 @@ namespace AddinRibbon.Services
                     branches[i + 1].Direction = BranchDirection(branchesToCompare);
                 }
             }
-
         }
 
         private Direction BranchDirection(Dictionary<int, Shape> branches)
@@ -81,6 +80,12 @@ namespace AddinRibbon.Services
                     var vector = targetBranchBox.Center - previousBranchBox.Center;
                     return GetDirection(vector);
                 }
+                else if (targetBranch.ShapeType == ShapeType.ELBOW)
+                {
+                    var vector = targetBranchBox.Center - previousBranchBox.Center;
+                    return GetDirectionForElbow(vector);
+                }
+
             }
 
             if (previousBranch.ShapeType == ShapeType.ELBOW)
@@ -88,6 +93,12 @@ namespace AddinRibbon.Services
                 if (targetBranch.ShapeType == ShapeType.FTUBE)
                 {
                     return previousBranch.Direction.Value;
+                }
+                else if (targetBranch.ShapeType == ShapeType.BEND)
+                {
+                    // It is not working
+                    var vector = targetBranchBox.Center - previousBranchBox.Center;
+                    return GetDirectionForBend(vector, previousBranch.Direction.Value);
                 }
             }
 
@@ -146,7 +157,7 @@ namespace AddinRibbon.Services
                    Math.Round(firstCenter.Z, 3) > Math.Round(secondCenter.Z, 3) ? zPositive : zNegative;
         }
 
-        private Direction DetermineDirection(Vector3D vector, double primary, double secondary, Direction positivePrimaryDirection, Direction negativePrimaryDirection, Direction positiveSecondaryDirection, Direction negativeSecondaryDirection)
+        private Direction DetermineDirection(double primary, double secondary, Direction positivePrimaryDirection, Direction negativePrimaryDirection, Direction positiveSecondaryDirection, Direction negativeSecondaryDirection)
         {
             //if (primary > 0)
             if (Math.Abs(primary) > Math.Abs(secondary))
@@ -166,10 +177,13 @@ namespace AddinRibbon.Services
                 else
                     return (Direction)Enum.Parse(typeof(Direction), primary.ToString() + "South");
             }
-            else if (vector.Y > 0)
-                return (Direction)Enum.Parse(typeof(Direction), primary.ToString() + "West");
             else
-                return (Direction)Enum.Parse(typeof(Direction), primary.ToString() + "East");
+            { 
+                if (vector.X < 0)
+                    return (Direction)Enum.Parse(typeof(Direction), primary.ToString() + "West");
+                else
+                    return (Direction)Enum.Parse(typeof(Direction), primary.ToString() + "East");
+            }
 
         }
 
@@ -177,15 +191,15 @@ namespace AddinRibbon.Services
         {
             if (Math.Abs(vector.Z) == 0)
             {
-                return DetermineDirection(vector, vector.X, vector.Y, Direction.West, Direction.East, Direction.North, Direction.South);
+                return DetermineDirection(vector.X, vector.Y, Direction.West, Direction.East, Direction.North, Direction.South);
             }
             if (Math.Abs(vector.Y) == 0)
             {
-                return DetermineDirection(vector, vector.X, vector.Z, Direction.East, Direction.West, Direction.Up, Direction.Down);
+                return DetermineDirection(vector.X, vector.Z, Direction.East, Direction.West, Direction.Up, Direction.Down);
             }
             if (Math.Abs(vector.X) == 0)
             {
-                return DetermineDirection(vector, vector.Y, vector.Z, Direction.North, Direction.South, Direction.Up, Direction.Down);
+                return DetermineDirection(vector.Y, vector.Z, Direction.North, Direction.South, Direction.Up, Direction.Down);
             }
             return Direction.Unknown;
         }
@@ -194,15 +208,15 @@ namespace AddinRibbon.Services
         {
             if (Math.Abs(vector.Z) == 0)
             {
-                return DetermineDirection(vector, vector.X, vector.Y, Direction.EastNorth, Direction.SouthEast, Direction.WestNorth, Direction.SouthWest);
+                return DetermineDirection(vector.X, vector.Y, Direction.EastNorth, Direction.SouthEast, Direction.WestNorth, Direction.SouthWest);
             }
             if (Math.Abs(vector.Y) == 0)
             {
-                return DetermineDirection(vector, vector.X, vector.Z, Direction.UpEast, Direction.DownEast, Direction.UpWest, Direction.DownWest);
+                return DetermineDirection(vector.X, vector.Z, Direction.UpEast, Direction.DownEast, Direction.UpWest, Direction.DownWest);
             }
             if (Math.Abs(vector.X) == 0)
             {
-                return DetermineDirection(vector, vector.Y, vector.Z, Direction.UpNorth, Direction.DownNorth, Direction.DownWest, Direction.DownSouth);
+                return DetermineDirection(vector.Y, vector.Z, Direction.UpNorth, Direction.DownNorth, Direction.DownWest, Direction.DownSouth);
             }
             return Direction.Unknown;
         }
@@ -215,15 +229,32 @@ namespace AddinRibbon.Services
             }
             if (Math.Abs(vector.Y) == 0)
             {
-                return DetermineDirection(vector, vector.X, vector.Z, Direction.UpEast, Direction.DownEast, Direction.UpWest, Direction.DownWest);
+                return DetermineDirection(vector.X, vector.Z, Direction.UpEast, Direction.DownEast, Direction.UpWest, Direction.DownWest);
             }
             if (Math.Abs(vector.X) == 0)
             {
-                return DetermineDirection(vector, vector.Y, vector.Z, Direction.UpNorth, Direction.DownNorth, Direction.DownWest, Direction.DownSouth);
+                return DetermineDirection(vector.Y, vector.Z, Direction.UpNorth, Direction.DownNorth, Direction.DownWest, Direction.DownSouth);
             }
             return Direction.Unknown;
         }
 
+        private Direction GetDirectionForElbow(Vector3D vector)
+        {
+            var primaryAxis = Math.Abs(vector.X) > Math.Abs(vector.Y) && Math.Abs(vector.X) > Math.Abs(vector.Z) ? "X" :
+                              Math.Abs(vector.Y) > Math.Abs(vector.X) && Math.Abs(vector.Y) > Math.Abs(vector.Z) ? "Y" : "Z";
+
+            switch (primaryAxis)
+            {
+                case "X":
+                    return vector.X >= 0 ? Direction.East : Direction.West;
+                case "Y":
+                    return vector.Y >= 0 ? Direction.North : Direction.South;
+                case "Z":
+                    return vector.Z >= 0 ? Direction.Up : Direction.Down;
+                default:
+                    return Direction.Unknown;
+            }
+        }
 
         private static List<Point3D> FindCommonPoints(List<Point3D> firstBranchBoxPoints, List<Point3D> secondBranchBoxPoints)
         {
