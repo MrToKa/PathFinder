@@ -17,7 +17,7 @@
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
     <Optimize>false</Optimize>
-    <OutputPath>..\..\Manage 2023\Navisworks Manage 2023\Plugins\AddinRibbon\</OutputPath>
+    <OutputPath>D:\Manage 2023\Navisworks Manage 2023\Plugins\AddinRibbon\</OutputPath>
     <DefineConstants>DEBUG;TRACE</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
@@ -33,15 +33,15 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="AdWindows">
-      <HintPath>..\..\Manage 2023\Navisworks Manage 2023\AdWindows.dll</HintPath>
+      <HintPath>D:\Manage 2023\Navisworks Manage 2023\AdWindows.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Autodesk.Navisworks.Api">
-      <HintPath>..\..\Manage 2023\Navisworks Manage 2023\Autodesk.Navisworks.Api.dll</HintPath>
+      <HintPath>D:\Manage 2023\Navisworks Manage 2023\Autodesk.Navisworks.Api.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="navisworks.gui.roamer">
-      <HintPath>..\..\Manage 2023\Navisworks Manage 2023\navisworks.gui.roamer.dll</HintPath>
+      <HintPath>D:\Manage 2023\Navisworks Manage 2023\navisworks.gui.roamer.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />

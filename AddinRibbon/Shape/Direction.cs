@@ -20,5 +20,6 @@
         DownSouth,
         DownEast,
         DownWest,
+        Unknown
     }
 }

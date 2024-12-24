@@ -83,6 +83,17 @@ namespace AddinRibbon.Ctr
 
                     var shapeService = new ShapeService();
                     shapeService.AssignShapesTypes(branches);
+                    shapeService.AssignShapesDirections(branches);
+
+                    lines.Add("Branches");
+                    foreach (var branch in branches)
+                    {
+                        lines.Add(string.Concat("Branch ", branch.Key, " : ", branch.Value.ModelItem.DisplayName));
+                        lines.Add(string.Concat("Direction: ", branch.Value.Direction));
+                        lines.Add(string.Concat("ShapeType: ", branch.Value.ShapeType));
+                        lines.Add(string.Concat("Direction: ", branch.Value.Direction));
+                        lines.Add(Environment.NewLine);
+                    }
 
                     var itemService = new ItemService();
                     lines.Add(childrenService.AddChildrenNodesCode(item, itemService));
