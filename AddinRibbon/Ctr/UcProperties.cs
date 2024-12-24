@@ -10,19 +10,10 @@ using AddinRibbon.Services;
 
 namespace AddinRibbon.Ctr
 {
-    /// <summary>
-    /// Aula/Lesson 6
-    /// </summary>
-    /// 
-
     [DockPanePlugin(800, 1500, AutoScroll = true, MinimumHeight = 100, MinimumWidth = 200)]
 
     public partial class UcProperties : UserControl
     {
-
-        /// <summary>
-        /// Aula/Lesson 6
-        /// </summary>
         public UcProperties()
         {
             InitializeComponent();
@@ -31,21 +22,12 @@ namespace AddinRibbon.Ctr
             NavisworksApp.MainDocumentChanged += ListenSelection;
         }
 
-        /// <summary>
-        /// Aula/Lesson 3
-        /// </summary>
-        /// <param name="e"></param>
         protected override void OnParentChanged(EventArgs e)
         {
             base.OnParentChanged(e);
             Dock = DockStyle.None;
         }
 
-        /// <summary>
-        /// Aula/Lesson 6
-        /// </summary>
-        /// <param name="sender"></param>
-        /// <param name="e"></param>
         private void ListenSelection(object sender, EventArgs e)
         {
             try
@@ -73,19 +55,18 @@ namespace AddinRibbon.Ctr
                 {
                     lines.Add(item.DisplayName);
                     lines.Add("BoundingBox Point");
-                    lines.Add(string.Concat("X:", item.BoundingBox().Center.X.ToString("0.000")));
-                    lines.Add(string.Concat("Y:", item.BoundingBox().Center.Y.ToString("0.000")));
-                    lines.Add(string.Concat("Z:", item.BoundingBox().Center.Z.ToString("0.000")));
-
-                    lines.Add(item.BoundingBox().Min.X.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Min.Y.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Min.Z.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Max.X.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Max.Y.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Max.Z.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Size.X.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Size.Y.ToString("0.000"));
-                    lines.Add(item.BoundingBox().Size.Z.ToString("0.000"));
+                    lines.Add(string.Concat("Box-X:", item.BoundingBox().Center.X.ToString("0.000")));
+                    lines.Add(string.Concat("Box-Y:", item.BoundingBox().Center.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Box-Z:", item.BoundingBox().Center.Z.ToString("0.000")));
+                    lines.Add(string.Concat("Min-X:",item.BoundingBox().Min.X.ToString("0.000")));
+                    lines.Add(string.Concat("Min-Y:",item.BoundingBox().Min.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Min-Z:",item.BoundingBox().Min.Z.ToString("0.000")));
+                    lines.Add(string.Concat("Max-X:",item.BoundingBox().Max.X.ToString("0.000")));
+                    lines.Add(string.Concat("Max-Y:",item.BoundingBox().Max.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Max-Z:",item.BoundingBox().Max.Z.ToString("0.000")));
+                    lines.Add(string.Concat("Size-X:",item.BoundingBox().Size.X.ToString("0.000")));
+                    lines.Add(string.Concat("Sizy-Y:",item.BoundingBox().Size.Y.ToString("0.000")));
+                    lines.Add(string.Concat("Size-Z:", item.BoundingBox().Size.Z.ToString("0.000")));
                     lines.Add(Environment.NewLine);
 
                     var childrenService = new ChildrenService();
@@ -102,9 +83,19 @@ namespace AddinRibbon.Ctr
 
                     var shapeService = new ShapeService();
                     shapeService.AssignShapesTypes(branches);
+                    shapeService.AssignShapesDirections(branches);
 
-                    //var itemService = new ItemService();
-                    //lines.Add(childrenService.AddChildrenNodesCode(item, itemService));
+                    lines.Add("Branches");
+                    foreach (var branch in branches)
+                    {
+                        lines.Add(string.Concat("Branch ", branch.Key, " : ", branch.Value.ModelItem.DisplayName));
+                        lines.Add(string.Concat("ShapeType: ", branch.Value.ShapeType));
+                        lines.Add(string.Concat("Direction: ", branch.Value.Direction));
+                        lines.Add(Environment.NewLine);
+                    }
+
+                    var itemService = new ItemService();
+                    lines.Add(childrenService.AddChildrenNodesCode(item, itemService));
 
                     childrenService.AddChildrenProperties(item.Children, lines, 1);
 

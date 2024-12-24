@@ -2,16 +2,20 @@
 {
     public enum Direction
     {
-        EastWest,
-        WestEast,
-        NorthSouth,
-        SouthNorth,
-        UpDown,
-        DownUp,
+        East,
+        West,
+        North,
+        South,
+        Up,
+        Down,
         NorthEast,
         NorthWest,
         SouthEast,
         SouthWest,
+        EastNorth,
+        EastSouth,
+        WestNorth,
+        WestSouth,
         UpNorth,
         UpSouth,
         UpEast,
@@ -20,5 +24,6 @@
         DownSouth,
         DownEast,
         DownWest,
+        Unknown
     }
 }
