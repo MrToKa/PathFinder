@@ -22,6 +22,8 @@ This PoC derives a centreline from the longest world-space bounding-box axis of 
 
 Bounding boxes do not contain the actual CAD centreline. Rotated pieces, elbows, curved parts, tray thickness, and equipment connection points therefore need a geometry review; displayed lengths are approximate. The 2 m test uses the equipment bounding-box centre and the approximated route centreline. `/SECONDARY` is a textual attachment marker; it does not create new model geometry. This is suitable for testing the proposed workflow, with exact curve extraction left as a later engineering improvement.
 
+Very large models also need a performance review. Show path captures and restores appearance synchronously on the native UI thread. A read-only inspection of the supplied project found 376,727 geometry pieces and exceeded its 300-second limit before completing all leaf metadata; full-project routing and visualization performance are not verified. Start with selected tray subsets. Graph size limits fail clearly when a network is too large or dense, and Pause remains checked by default.
+
 Names preserve full codes such as `/BC001`, `/DFBC009`, `/VFD007-2`. Rules are explicit; names do not grant cable permissions automatically. The supplied tray catalog supports A→MV, B/DFB→LV, BC/DFBC→LV+Control, C/DFC→Control. VFD and grounding require an explicit user decision within this three-category PoC.
 
 ## Build and test
