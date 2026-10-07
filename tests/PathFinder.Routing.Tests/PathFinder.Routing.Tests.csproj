@@ -10,5 +10,6 @@
   <ItemGroup>
     <Compile Include="../../AddinRibbon/Routing/*.cs" Link="Routing/%(Filename)%(Extension)" />
     <Compile Include="Program.cs" />
+    <Compile Include="GeometryTests.cs" />
   </ItemGroup>
 </Project>

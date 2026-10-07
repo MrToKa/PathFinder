@@ -243,11 +243,43 @@ public sealed class PathFinderSmoke : AddInPlugin
                 var fingerprint = typeof(RoutingSession).GetMethod("AreCapturedSegmentsCurrent");
                 Assert(fingerprint != null, "Captured geometry fingerprint method is missing.");
                 Assert((bool)fingerprint.Invoke(session, null), "Fresh captures unexpectedly stale.");
-                using (var translation = Transform3D.CreateTranslation(new Vector3D(0.125, 0, 0)))
-                    document.Models.OverridePermanentTransform(new[] { leaf }, translation, true);
-                Assert(!(bool)fingerprint.Invoke(session, null), "Changed item bounding box was accepted as current.");
-                document.Models.ResetPermanentTransform(new[] { leaf });
-                Assert((bool)fingerprint.Invoke(session, null), "Reset item geometry did not match captured box.");
+                using (var before = leaf.BoundingBox())
+                {
+                    try
+                    {
+                        using (var translation = Transform3D.CreateTranslation(new Vector3D(0.125, 0, 0)))
+                            document.Models.OverridePermanentTransform(new[] { leaf }, translation, true);
+                        Assert(!(bool)fingerprint.Invoke(session, null), "Changed item bounding box was accepted as current.");
+                    }
+                    finally { document.Models.ResetPermanentTransform(new[] { leaf }); }
+                    using (var reset = leaf.BoundingBox()) AssertBounds(reset, before);
+                }
+                // Native Reset can numerically rebase the active matrix even when
+                // the physical bounds are restored. Capture the restored geometry.
+                Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert((bool)fingerprint.Invoke(session, null), "A fresh capture after resetting the item was unexpectedly stale.");
+            });
+            Check("half_turn_with_unchanged_world_box_invalidates_capture", () =>
+            {
+                Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(session.AreCapturedSegmentsCurrent(), "The half-turn fixture was stale before applying its rotation.");
+                using (var before = leaf.BoundingBox())
+                {
+                    var centre = before.Center;
+                    try
+                    {
+                        using (var linear = new Matrix3(-1, 0, 0, 0, -1, 0, 0, 0, 1))
+                        using (var translation = new Vector3D(2 * centre.X, 2 * centre.Y, 0))
+                        using (var transform = new Transform3D(linear, translation))
+                            document.Models.OverridePermanentTransform(new[] { leaf }, transform, false);
+                        using (var after = leaf.BoundingBox()) AssertBounds(after, before);
+                        Assert(!session.AreCapturedSegmentsCurrent(), "A changed transform with unchanged world bounds retained its old ports.");
+                    }
+                    finally { document.Models.ResetPermanentTransform(new[] { leaf }); }
+                    using (var reset = leaf.BoundingBox()) AssertBounds(reset, before);
+                }
+                Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(session.AreCapturedSegmentsCurrent(), "A fresh capture after resetting the half-turn was unexpectedly stale.");
             });
             Check("missing_object_name_has_readable_error", () => ExpectInvalid(() => Wait(session.ResolveAsync("NO_SUCH_OBJECT_PF_SMOKE_928371", null, CancellationToken.None)), "Object not found"));
             var duplicate = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf
@@ -258,6 +290,14 @@ public sealed class PathFinderSmoke : AddInPlugin
                 ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Key, null, CancellationToken.None)), "More than one visible object");
                 var picked = duplicate.First();
                 Assert(Wait(session.ResolveAsync(duplicate.Key, picked, CancellationToken.None)).Equals(picked), "Picked duplicate was not resolved.");
+            });
+            Check("native_name_search_caches_only_requested_names_and_reuses_case_variants", () =>
+            {
+                var cache = Field<Dictionary<string, List<ModelItem>>>(session, "nameIndex");
+                Assert(cache.Count == 2 && cache.ContainsKey(duplicate.Key), "Name search unexpectedly indexed the full model.");
+                var matches = cache[duplicate.Key];
+                ExpectInvalid(() => Wait(session.ResolveAsync("  " + duplicate.Key.ToUpperInvariant() + "  ", null, CancellationToken.None)), "More than one visible object");
+                Assert(cache.Count == 2 && ReferenceEquals(matches, cache[duplicate.Key]), "Case/trim variants did not reuse the existing native search result.");
             });
             Check("cancelled_capture_does_not_commit_partial_rules", () =>
             {
@@ -822,6 +862,7 @@ public sealed class PathFinderSmoke : AddInPlugin
 
     private static T Field<T>(object target, string name)
     { return (T)target.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(target); }
+
     private static object Invoke(object target, string name, params object[] args)
     { return target.GetType().GetMethod(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(target, args); }
 
@@ -887,6 +928,11 @@ public sealed class PathFinderSmoke : AddInPlugin
     { return new Dictionary<string, object> { { "name", name }, { "passed", passed }, { "detail", detail } }; }
     private static void Assert(bool value, string message) { if (!value) throw new Exception(message); }
     private static void AssertNear(double actual, double expected) { Assert(Math.Abs(actual - expected) < 0.000001, "Expected " + expected + ", got " + actual); }
+    private static void AssertBounds(BoundingBox3D actual, BoundingBox3D expected)
+    {
+        AssertNear(actual.Min.X, expected.Min.X); AssertNear(actual.Min.Y, expected.Min.Y); AssertNear(actual.Min.Z, expected.Min.Z);
+        AssertNear(actual.Max.X, expected.Max.X); AssertNear(actual.Max.Y, expected.Max.Y); AssertNear(actual.Max.Z, expected.Max.Z);
+    }
     private static void AssertColor(ModelItem item, double r, double g, double b)
     { var c = item.Geometry.ActiveColor; AssertNear(c.R, r); AssertNear(c.G, g); AssertNear(c.B, b); }
     private static List<Appearance> Snapshot(IEnumerable<ModelItem> items)

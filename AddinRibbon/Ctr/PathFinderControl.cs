@@ -139,7 +139,7 @@ namespace AddinRibbon.Ctr
             layout.Controls.Add(options, 0, 1);
             layout.Controls.Add(pause, 0, 2);
             var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 3);
-            layout.Controls.Add(new Label { Text = "SECONDARY: endpoint centre is more than 2 m from an allowed route centreline. Geometry and length use bounding-box centreline approximations.", AutoSize = true, Dock = DockStyle.Fill }, 0, 4);
+            layout.Controls.Add(new Label { Text = "SECONDARY: endpoint centre is more than 2 m from an allowed route centreline. Lengths are approximate; validated 90° bends follow their curved centreline.", AutoSize = true, Dock = DockStyle.Fill }, 0, 4);
             layout.Controls.Add(output, 0, 5); page.Controls.Add(layout); tabs.TabPages.Add(page);
         }
 
@@ -264,6 +264,7 @@ namespace AddinRibbon.Ctr
                     + "From to allowed route: " + result.FromDistanceMeters.ToString("F3") + " m" + Environment.NewLine
                     + "To to allowed route: " + result.ToDistanceMeters.ToString("F3") + " m" + Environment.NewLine
                     + "Geometry leaves used: " + result.SegmentIds.Distinct().Count()
+                    + (session.FallbackBends > 0 ? Environment.NewLine + "Geometry review: " + session.FallbackBends + " bend(s) in the selected network use a straight approximation." : "")
                 : result.Message;
         }
         private void ShowPath()

@@ -18,20 +18,27 @@ internal static class Program
         {
             Run("Full route names and piece suffixes", CodeParsing);
             Run("A continuous polyline and middle projections", LongPolylineProjection);
+            Run("Sparse graphs retain long geometry without length-dependent nodes", SparseGeometry);
             Run("Exactly two metres and both secondary markers", SecondaryBoundary);
             Run("Disconnected network does not fabricate a path", Disconnected);
-            Run("Exact skew contact between samples at the tolerance boundary", ExactContacts);
+            Run("Exact skew contact and AABB gaps at the tolerance boundary", ExactContacts);
             Run("Right-angle route length follows its joint at both tolerances", RightAngleLength);
             Run("Known 3D diagonal polyline length and interior junction", DiagonalAndInteriorJunction);
             Run("Parallel overlapping centreline contacts avoid artificial detours", ParallelOverlap);
+            Run("Physical bend ports retain all curve vertices and interior object attachment", PhysicalBendPorts);
+            Run("Port-only segments retain port projections, gaps and paired curves", PortContacts);
             Run("Category filtering rejects a forbidden bridge", Categories);
             Run("Ordered transitions retain a route re-entry", Reentry);
             Run("Reverse swaps attachments and is an involution", Reversal);
             Run("Repeated requests cannot accumulate graph edges", Repeatability);
             Run("Invalid data and a graph size limit are handled", InvalidAndNodeLimit);
             Run("Dense overlapping geometry stops at a connection limit", DenseConnections);
+            Run("Rejected overlapping bounds stop at a candidate limit", CandidateLimit);
+            Run("One thousand coincident pieces avoid repeated sample scans", DensePerformance);
+            Run("Long parallel pieces use centre distribution in the AABB tree", ParallelDistribution);
             Run("Cancellation before and during calculation", Cancellation);
             Run("45 x 45 intersecting grid performance", GridPerformance);
+            GeometryTests.Run(Run);
             if (args.Length > 0) Run("Excel report tray code fixtures", () => ExcelCodes(args[0]));
             Console.WriteLine("All " + passed + " routing regression checks passed.");
             return 0;
@@ -101,6 +108,26 @@ internal static class Program
         Near(6, result.LengthMeters, "The path must follow the bend.");
     }
 
+    private static void SparseGeometry()
+    {
+        var tray = T("long", "C135", CableCategory.Control, P(0), P(50000));
+        foreach (double spacing in new[] { 0.001, 100.0 })
+        {
+            var result = Calculator.Calculate(new[] { tray }, P(1000, 1), P(2000, 1), CableCategory.Control,
+                new RoutingOptions { MaxGraphNodes = 4, SampleSpacingMeters = spacing });
+            Assert(result.Success, "Length must not consume graph nodes: " + result.Message);
+            Near(1002, result.LengthMeters, "Sparse endpoint projections must retain the exact attachment and tray lengths.");
+            Assert(result.PathPoints.Count == 4, "A straight path needs only its endpoints and two projections.");
+        }
+        var pieces = new[] { T("135", "C135", CableCategory.Control, P(0), P(10)),
+            T("136", "C136", CableCategory.Control, P(10), P(10, 10)),
+            T("137", "C137", CableCategory.Control, P(10, 10), P(20, 10)) };
+        var path = Calculator.Calculate(pieces, P(0, -3), P(20, 10), CableCategory.Control);
+        Assert(path.Success && path.RouteText == "/SECONDARY/C135/C136/C137", "Ordered route names and the first secondary leg must survive sparse routing.");
+        Near(33, path.LengthMeters, "Every physical leg must remain in the sparse path.");
+        Assert(path.PathPoints.Count == 5, "Intermediate samples must not inflate the displayed polyline.");
+    }
+
     private static void SecondaryBoundary()
     {
         var tray = T("one", "BC001", CableCategory.LV | CableCategory.Control, P(0), P(10));
@@ -120,12 +147,21 @@ internal static class Program
             T("b", "B002", CableCategory.LV, P(2.251), P(4)) };
         var result = Calculator.Calculate(trays, P(0), P(4), CableCategory.LV);
         Assert(!result.Success && result.RouteCodes.Count == 0, "A gap over tolerance cannot be crossed.");
+        var diagnostic = Calculator.Calculate(trays, P(0, -3), P(4, 1), CableCategory.LV);
+        Assert(!diagnostic.Success && diagnostic.Message.Contains("/B001 (3 m") &&
+            diagnostic.Message.Contains("/B002 (1 m") && diagnostic.Message.Contains("0.25 m connection tolerance"),
+            "A disconnected result must identify both nearest trays, attachment distances and the actual allowed gap.");
         var connected = new[] { trays[0], T("b", "B002", CableCategory.LV, P(2.25), P(4)) };
         Assert(Calculator.Calculate(connected, P(0), P(4), CableCategory.LV).Success,
             "A gap exactly at the connection tolerance is eligible.");
         var separatedByHeight = new[] { trays[0], T("b", "B002", CableCategory.LV, P(1, 0, 1), P(4, 0, 1)) };
         Assert(!Calculator.Calculate(separatedByHeight, P(0), P(4, 0, 1), CableCategory.LV).Success,
             "Routing must compare Z as well as X and Y.");
+        var island = new[] { T("a", "C135", CableCategory.Control, P(0), P(0.1)),
+            T("b", "C136", CableCategory.Control, P(0, 1), P(10, 1)),
+            T("c", "C137", CableCategory.Control, P(10, 1), P(20, 1)) };
+        Assert(!Calculator.Calculate(island, P(0), P(20, 1), CableCategory.Control).Success,
+            "The nearest disconnected island must not silently attach to a different tray to manufacture success.");
     }
 
     private static void Categories()
@@ -194,6 +230,71 @@ internal static class Program
         Near(5 * Math.Sqrt(3), diagonalResult.LengthMeters, "Rotated overlap must retain the true centreline length.");
     }
 
+    private static RoutePoint[] QuarterCurve(double offsetX = 0, double offsetY = 0)
+    {
+        var points = Enumerable.Range(0, 19).Select(index =>
+            P(offsetX + Math.Sin(index * Math.PI / 36), offsetY + 1 - Math.Cos(index * Math.PI / 36))).ToArray();
+        points[0] = P(offsetX, offsetY); points[18] = P(offsetX + 1, offsetY + 1);
+        return points;
+    }
+
+    private static double PolylineLength(IReadOnlyList<RoutePoint> points)
+    {
+        double length = 0;
+        for (int index = 1; index < points.Count; index++) length += points[index - 1].DistanceTo(points[index]);
+        return length;
+    }
+
+    private static void PhysicalBendPorts()
+    {
+        var arc = QuarterCurve();
+        var bend = new TraySegment("b", "B002", CableCategory.LV | CableCategory.Control, arc, connectionsAtEndsOnly: true);
+        var trays = new[] { T("a", "B001", CableCategory.LV, P(-10), arc[0]), bend,
+            T("c", "B003", CableCategory.LV, arc[18], P(1, 11)) };
+        var result = Calculator.Calculate(trays, P(-10), P(1, 11), CableCategory.LV,
+            new RoutingOptions { ConnectionToleranceMeters = 0.25 });
+        Assert(result.Success && result.RouteText == "/B001/B002/B003", result.Message);
+        Near(20 + PolylineLength(arc), result.LengthMeters, "Straight neighbours must not shortcut a curve through nearby interior pieces.");
+        Assert(result.PathPoints.Count == 21 && arc.All(vertex => result.PathPoints.Any(point => point.DistanceTo(vertex) < 1e-10)),
+            "All nineteen curve vertices, including the physical ports, must remain in the displayed path.");
+        var interior = Calculator.Calculate(new[] { bend }, arc[9], arc[18], CableCategory.Control);
+        Assert(interior.Success && interior.PathPoints.Count == 10, "An object may attach to the interior of a port-only curve.");
+        Near(PolylineLength(arc) / 2, interior.LengthMeters, "Interior object attachment must travel only the remaining physical curve.");
+        var interiorBranch = T("branch", "B004", CableCategory.LV, arc[9], P(5, 5));
+        Assert(!Calculator.Calculate(new[] { bend, trays[2], interiorBranch }, P(5, 5), P(1, 11), CableCategory.LV).Success,
+            "A generic tray touching a curve side must not invent a physical bend port.");
+    }
+
+    private static void PortContacts()
+    {
+        foreach (bool portFirst in new[] { false, true })
+        {
+            var port = new TraySegment(portFirst ? "a" : "z", "B001", CableCategory.LV,
+                new[] { P(0), P(10) }, connectionsAtEndsOnly: true);
+            var rail = T("m", "B002", CableCategory.LV, P(0, -3), P(0, 3));
+            var contact = Calculator.Calculate(new[] { port, rail }, P(10), P(0, 3), CableCategory.LV);
+            Assert(contact.Success, contact.Message);
+            Near(13, contact.LengthMeters, "A physical port may join an analytical interior projection of a generic tray.");
+        }
+        var arc = QuarterCurve();
+        var bend = new TraySegment("b", "B002", CableCategory.LV, arc, connectionsAtEndsOnly: true);
+        var gappedStraight = T("a", "B001", CableCategory.LV, P(-10), P(-0.015));
+        var joined = Calculator.Calculate(new[] { gappedStraight, bend }, P(-10), arc[18], CableCategory.LV);
+        Assert(joined.Success, joined.Message);
+        Near(10 + PolylineLength(arc), joined.LengthMeters, "A real fifteen-millimetre port gap must be retained in the connector length.");
+        Assert(!Calculator.Calculate(new[] { gappedStraight, bend }, P(-10), arc[18], CableCategory.LV,
+            new RoutingOptions { ConnectionToleranceMeters = 0.005 }).Success, "A port gap above the selected tolerance must remain disconnected.");
+        var nextArc = QuarterCurve(1, 1);
+        var next = new TraySegment("c", "B003", CableCategory.LV, nextArc, connectionsAtEndsOnly: true);
+        var paired = Calculator.Calculate(new[] { bend, next }, arc[0], nextArc[18], CableCategory.LV);
+        Assert(paired.Success && paired.PathPoints.Count == 37, "Two port-only curves must join at their shared physical port and retain both curves.");
+        Near(PolylineLength(arc) + PolylineLength(nextArc), paired.LengthMeters, "Port-to-port curve connections must retain both complete lengths.");
+        var crossing = new[] { new TraySegment("a", "B001", CableCategory.LV, new[] { P(0), P(10) }, true),
+            new TraySegment("b", "B002", CableCategory.LV, new[] { P(5, -5), P(5, 5) }, true) };
+        Assert(!Calculator.Calculate(crossing, P(0), P(5, 5), CableCategory.LV).Success,
+            "Two port-only segments crossing at their interiors must not connect.");
+    }
+
     private static void ExactContacts()
     {
         // Neither polyline has a regular sample at the true nearest contact.
@@ -209,6 +310,13 @@ internal static class Program
         var outside = T("b", "BC001", CableCategory.LV, P(0.0625, -1, 0.250001), P(0.0625, 1, 0.250001));
         Assert(!Calculator.Calculate(new[] { horizontal, outside }, P(-1, 0.0625), P(0.0625, 1, 0.250001), CableCategory.LV).Success,
             "Exact contacts must not widen the configured gap tolerance.");
+        var origin = T("a", "B001", CableCategory.LV, P(0), P(0));
+        var diagonalGap = T("b", "BC001", CableCategory.LV, P(0.15, 0.20), P(0.15, 0.20));
+        Assert(Calculator.Calculate(new[] { origin, diagonalGap }, P(0), P(0.15, 0.20), CableCategory.LV).Success,
+            "The AABB query must retain an exact Euclidean tolerance contact.");
+        var excessiveGap = T("b", "BC001", CableCategory.LV, P(0.15, 0.200001), P(0.15, 0.200001));
+        Assert(!Calculator.Calculate(new[] { origin, excessiveGap }, P(0), P(0.15, 0.200001), CableCategory.LV).Success,
+            "Bounds overlapping on individual axes do not prove an allowable 3D connection.");
     }
 
     private static void Reentry()
@@ -258,7 +366,9 @@ internal static class Program
         Throws<ArgumentException>(() => Calculator.Calculate(new[] { tray }, P(0), P(1), CableCategory.All));
         Throws<ArgumentException>(() => Calculator.Calculate(new[] { tray }, P(0), P(1), CableCategory.LV,
             new RoutingOptions { ConnectionToleranceMeters = 0 }));
-        var limited = Calculator.Calculate(new[] { tray }, P(0), P(5), CableCategory.LV,
+        var detailed = T("detailed", "B001", CableCategory.LV,
+            Enumerable.Range(0, 21).Select(index => P(index, index % 2)).ToArray());
+        var limited = Calculator.Calculate(new[] { detailed }, P(0), P(20), CableCategory.LV,
             new RoutingOptions { MaxGraphNodes = 10 });
         Assert(!limited.Success && limited.Message.Contains("node limit"), "Oversized geometry must stop cleanly.");
         var zero = T("zero", "B001", CableCategory.LV, P(0), P(0));
@@ -277,7 +387,7 @@ internal static class Program
         }
         using (var source = new CancellationTokenSource())
         {
-            var grid = MakeGrid(85);
+            var grid = MakeOverlappingBounds(2000);
             source.CancelAfter(5);
             Throws<OperationCanceledException>(() => Calculator.Calculate(grid, P(0), P(84, 84),
                 CableCategory.LV, cancellationToken: source.Token));
@@ -292,6 +402,55 @@ internal static class Program
             new RoutingOptions { MaxGraphNodes = 500, MaxGraphConnections = 1000 });
         Assert(!result.Success && result.Message.Contains("connection limit"),
             "A node cap alone cannot prevent quadratic memory use for overlapping trays.");
+    }
+
+    private static List<TraySegment> MakeOverlappingBounds(int count)
+    {
+        return Enumerable.Range(0, count).Select(index =>
+            T(index.ToString("D8"), "B001", CableCategory.LV,
+                P(0, index), P(10000, 10000 + index))).ToList();
+    }
+
+    private static void CandidateLimit()
+    {
+        // Parallel lines are more than the allowed gap apart, but their long
+        // diagonal AABBs overlap. An edge limit cannot bound these rejected pairs.
+        var result = Calculator.Calculate(MakeOverlappingBounds(200), P(0), P(0, 199), CableCategory.LV,
+            new RoutingOptions { MaxGraphNodes = 500, MaxGraphConnections = 500 });
+        Assert(!result.Success && result.Message.Contains("candidate limit"),
+            "Dense rejected geometry must stop without relying on accepted graph edges.");
+    }
+
+    private static void DensePerformance()
+    {
+        var dense = Enumerable.Range(0, 1000).Select(index =>
+            T(index.ToString("D8"), "B001", CableCategory.LV, P(0), P(10))).ToArray();
+        var timer = Stopwatch.StartNew();
+        long allocated = GC.GetTotalAllocatedBytes(true);
+        var result = Calculator.Calculate(dense, P(0), P(10), CableCategory.LV);
+        Assert(result.Success, result.Message);
+        Near(10, result.LengthMeters, "Dense coincident pieces must not alter length.");
+        Assert(result.PathPoints.Count == 2, "Dense overlap must not add display samples.");
+        Assert(timer.ElapsedMilliseconds < 15000, "Dense routing exceeded its bounded performance expectation.");
+        Console.WriteLine("  1,000 coincident 10 m pieces; " + timer.ElapsedMilliseconds + " ms; " +
+            ((GC.GetTotalAllocatedBytes(true) - allocated) / 1048576.0).ToString("0.0") + " MiB allocated.");
+    }
+
+    private static void ParallelDistribution()
+    {
+        const int count = 10000;
+        // Lexical IDs scramble the spatial order. Splitting by world-box width
+        // would choose constant X centres and create nearly useless partitions.
+        var trays = Enumerable.Range(0, count).Select(index =>
+            T(((index * 7919) % count).ToString("D8"), "B001", CableCategory.LV,
+                P(0, index), P(100000, index))).ToArray();
+        var timer = Stopwatch.StartNew();
+        var result = Calculator.Calculate(trays, P(0, 42), P(100000, 42), CableCategory.LV);
+        Assert(result.Success, result.Message);
+        Near(100000, result.LengthMeters, "Long unconnected parallel pieces must preserve their own length.");
+        Assert(result.PathPoints.Count == 2, "Long pieces must not consume sampled graph vertices.");
+        Assert(timer.ElapsedMilliseconds < 10000, "AABB centre partitioning did not bound sparse parallel comparisons.");
+        Console.WriteLine("  10,000 long parallel pieces in " + timer.ElapsedMilliseconds + " ms.");
     }
 
     private static List<TraySegment> MakeGrid(int size)
@@ -314,7 +473,7 @@ internal static class Program
         Assert(result.Success, result.Message);
         Near(88, result.LengthMeters, "An orthogonal grid must follow its centreline junctions without cutting corners.");
         Assert(timer.ElapsedMilliseconds < 30000, "Grid routing exceeded 30 seconds.");
-        Console.WriteLine("  90 polylines / approximately 31,770 samples; " + result.LengthMeters.ToString("0.000") + " m path.");
+        Console.WriteLine("  90 polylines; " + result.PathPoints.Count + " sparse path points; " + result.LengthMeters.ToString("0.000") + " m path.");
     }
 
     private static void ExcelCodes(string file)

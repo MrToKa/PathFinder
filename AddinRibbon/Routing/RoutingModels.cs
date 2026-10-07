@@ -57,9 +57,14 @@ namespace AddinRibbon.Routing
         public string RouteCode { get; private set; }
         public CableCategory AllowedCategories { get; private set; }
         public IReadOnlyList<RoutePoint> Points { get; private set; }
+        /// <summary>Cross-tray connections use only the physical first/last ports; object projection may use the interior.</summary>
+        public bool ConnectionsAtEndsOnly { get; private set; }
 
         public TraySegment(string id, string name, CableCategory allowedCategories,
-            IEnumerable<RoutePoint> points)
+            IEnumerable<RoutePoint> points) : this(id, name, allowedCategories, points, false) { }
+
+        public TraySegment(string id, string name, CableCategory allowedCategories,
+            IEnumerable<RoutePoint> points, bool connectionsAtEndsOnly = false)
         {
             if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("A tray needs a stable identifier.", "id");
             if (points == null) throw new ArgumentNullException("points");
@@ -72,6 +77,7 @@ namespace AddinRibbon.Routing
             RouteCode = RouteCodeParser.Parse(Name);
             AllowedCategories = allowedCategories;
             Points = new ReadOnlyCollection<RoutePoint>(copy);
+            ConnectionsAtEndsOnly = connectionsAtEndsOnly;
         }
     }
 

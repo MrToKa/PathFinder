@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using AddinRibbon.Routing;
@@ -26,11 +29,16 @@ namespace AddinRibbon.Services
         private Document document;
         private Dictionary<string, List<ModelItem>> nameIndex;
         private readonly Dictionary<ModelItem, double[]> capturedBoxes = new Dictionary<ModelItem, double[]>();
+        private readonly Dictionary<ModelItem, BendMeshSnapshot> bendMeshes = new Dictionary<ModelItem, BendMeshSnapshot>();
+        private static readonly Regex ShapeName = new Regex(@"\b(?:BEND|ELBOW|FTUBE|TUBE|STRAIGHT)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         public List<RouteAssignment> Assignments { get; } = new List<RouteAssignment>();
         public Dictionary<string, ModelItem> SegmentItems { get; } = new Dictionary<string, ModelItem>();
         public Document Document { get { return document; } }
         public int Revision { get; private set; }
         public int ModelRevision { get; private set; }
+        public int ValidatedBends { get; private set; }
+        public int FallbackBends { get; private set; }
+        public IReadOnlyList<string> GeometryDiagnostics { get; private set; } = new string[0];
         public event EventHandler Changed;
 
         public RoutingSession()
@@ -67,19 +75,22 @@ namespace AddinRibbon.Services
         private void ModelChanged(object sender, EventArgs e) { InvalidateModel(); }
         private void TransformChanged(object sender, ModelTransformEventArgs e) { InvalidateModel(); }
         // Hidden/Required edits change the usable network without replacing the model.
-        // Keep assignments and the complete name index, but invalidate captured results.
+        // Keep assignments and per-name search matches, but invalidate captured results.
         private void VisibilityChanged(object sender, EventArgs e) { NotifyChanged(); }
         private void InvalidateModel()
         {
             ModelRevision++;
             Assignments.Clear();
             nameIndex = null;
+            bendMeshes.Clear();
             NotifyChanged();
         }
         public void NotifyChanged()
         {
             SegmentItems.Clear();
             capturedBoxes.Clear();
+            ValidatedBends = FallbackBends = 0;
+            GeometryDiagnostics = new string[0];
             Revision++;
             Changed?.Invoke(this, EventArgs.Empty);
         }
@@ -131,30 +142,44 @@ namespace AddinRibbon.Services
                     return picked;
                 }
             }
-            if (nameIndex == null)
+            if (nameIndex == null) nameIndex = new Dictionary<string, List<ModelItem>>(StringComparer.OrdinalIgnoreCase);
+            if (!nameIndex.TryGetValue(name, out var matches))
             {
-                int revision = Revision, count = 0;
-                var index = new Dictionary<string, List<ModelItem>>(StringComparer.OrdinalIgnoreCase);
-                foreach (var item in document.Models.CreateCollectionFromRootItems().DescendantsAndSelf)
+                int revision = Revision;
+                // Search inside Navisworks instead of crossing the native boundary
+                // for every item in a large model. Cache all matches for this name,
+                // then apply live Hidden state on every lookup, including Unhide.
+                await Task.Delay(1, token);
+                if (revision != Revision) throw new OperationCanceledException("Model changed during object search.");
+                using (var search = new Search())
                 {
-                    token.ThrowIfCancellationRequested();
-                    if (!string.IsNullOrWhiteSpace(item.DisplayName))
-                    {
-                        if (!index.TryGetValue(item.DisplayName.Trim(), out var list)) index[item.DisplayName.Trim()] = list = new List<ModelItem>();
-                        list.Add(item);
-                    }
-                    if (++count % 300 == 0) await Task.Delay(1, token);
-                    if (revision != Revision) throw new OperationCanceledException("Model changed during object search.");
+                    search.Selection.SelectAll();
+                    search.Locations = SearchLocations.DescendantsAndSelf;
+                    search.PruneBelowMatch = false;
+                    // Native contains finds both raw and whitespace-padded names;
+                    // the exact trimmed post-filter preserves the lookup contract.
+                    search.SearchConditions.Add(SearchCondition.HasPropertyByName(PropertyCategoryNames.Item, DataPropertyNames.ItemName)
+                        .DisplayStringContains(name).IgnoreStringValueCase());
+                    matches = search.FindAll(document, false).Where(item =>
+                        string.Equals((item.DisplayName ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase)).ToList();
                 }
-                nameIndex = index;
+                token.ThrowIfCancellationRequested();
+                if (revision != Revision) throw new OperationCanceledException("Model changed during object search.");
+                nameIndex[name] = matches;
             }
-            if (!nameIndex.TryGetValue(name, out var matches)) throw new InvalidOperationException("Object not found: " + name);
+            if (matches.Count == 0) throw new InvalidOperationException("Object not found: " + name);
             // Evaluate the current visibility, including ancestors, on every lookup.
             // A cached name index must also support objects unhidden after its creation.
-            var visible = matches.Where(IsVisibleEndpoint).ToList();
-            if (visible.Count == 0) throw new InvalidOperationException("Object not found among visible objects: " + name + ". Matching objects are hidden or have no visible geometry.");
-            if (visible.Count != 1) throw new InvalidOperationException("More than one visible object is named " + name + ". Select the intended object and use 'Use selection'.");
-            return visible[0];
+            ModelItem visible = null;
+            foreach (var match in matches)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!IsVisibleEndpoint(match)) continue;
+                if (visible != null) throw new InvalidOperationException("More than one visible object is named " + name + ". Select the intended object and use 'Use selection'.");
+                visible = match;
+            }
+            if (visible == null) throw new InvalidOperationException("Object not found among visible objects: " + name + ". Matching objects are hidden or have no visible geometry.");
+            return visible;
         }
 
         public static bool IsVisible(ModelItem item)
@@ -190,10 +215,11 @@ namespace AddinRibbon.Services
             foreach (var assignment in Assignments)
                 foreach (var leaf in assignment.Leaves) assigned[leaf] = assignment;
             double scale = UnitConversion.ScaleFactor(document.Units, Units.Meters);
-            var segments = new List<TraySegment>();
+            var inputs = new List<TrayGeometryInput>();
             var items = new Dictionary<string, ModelItem>();
             var boxes = new Dictionary<ModelItem, double[]>();
-            int count = 0, visited = 0;
+            int count = 0;
+            var slice = Stopwatch.StartNew();
             foreach (var pair in assigned)
             {
                 token.ThrowIfCancellationRequested();
@@ -205,20 +231,50 @@ namespace AddinRibbon.Services
                         if (!box.IsEmpty)
                         {
                             string id = (++count).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            segments.Add(new TraySegment(id, FindRouteName(item, pair.Value.Root), pair.Value.Categories, Centerline(box, scale)));
+                            string shape = FindShapeName(item, pair.Value.Root);
+                            var minimum = ToMeters(box.Min, scale);
+                            var maximum = ToMeters(box.Max, scale);
+                            var fingerprint = GeometryFingerprint(item, box);
+                            IReadOnlyList<TrayFaceExtent> faces = null;
+                            if (TrayGeometryBuilder.IsBendOrElbow(shape))
+                            {
+                                if (bendMeshes.TryGetValue(item, out var cached) && cached.Fingerprint.SequenceEqual(fingerprint))
+                                    faces = cached.Faces;
+                                else
+                                {
+                                    try { faces = TrayMeshReader.ReadFaces(item, minimum, maximum, scale, token); }
+                                    catch (COMException) { token.ThrowIfCancellationRequested(); faces = new TrayFaceExtent[0]; }
+                                    catch (InvalidOperationException) { token.ThrowIfCancellationRequested(); faces = new TrayFaceExtent[0]; }
+                                    catch (NotSupportedException) { token.ThrowIfCancellationRequested(); faces = new TrayFaceExtent[0]; }
+                                    // Cache only detached mesh evidence; rules and live visibility
+                                    // are still evaluated on every capture.
+                                    if (bendMeshes.Count >= 2000) bendMeshes.Clear();
+                                    bendMeshes[item] = new BendMeshSnapshot(fingerprint, faces);
+                                }
+                            }
+                            inputs.Add(new TrayGeometryInput(id, FindRouteName(item, pair.Value.Root), pair.Value.Categories,
+                                shape, minimum, maximum, faces));
                             items.Add(id, item);
-                            boxes.Add(item, BoxCoordinates(box));
+                            boxes.Add(item, fingerprint);
                         }
                     }
                 }
-                if (++visited % 200 == 0) await Task.Delay(1, token);
+                if (slice.ElapsedMilliseconds >= 25) { await Task.Delay(1, token); slice.Restart(); }
                 if (revision != Revision) throw new OperationCanceledException("Model changed during geometry capture.");
             }
+            // Native capture is finished. Bend fitting uses values only, away from
+            // the host thread, and commits atomically with the rest of the snapshot.
+            var geometry = await Task.Run(() => TrayGeometryBuilder.Build(inputs, token), token);
+            token.ThrowIfCancellationRequested();
+            if (revision != Revision) throw new OperationCanceledException("Model changed during geometry capture.");
             SegmentItems.Clear();
             foreach (var pair in items) SegmentItems.Add(pair.Key, pair.Value);
             capturedBoxes.Clear();
             foreach (var pair in boxes) capturedBoxes.Add(pair.Key, pair.Value);
-            return segments;
+            ValidatedBends = geometry.ValidatedBends;
+            FallbackBends = geometry.FallbackBends;
+            GeometryDiagnostics = geometry.Diagnostics;
+            return geometry.Segments.ToList();
         }
 
         // Item-level Transform overrides do not raise ModelTransformChanged in the host.
@@ -229,14 +285,35 @@ namespace AddinRibbon.Services
             foreach (var pair in capturedBoxes)
             {
                 if (!IsVisible(pair.Key)) return false;
-                var box = pair.Key.BoundingBox();
-                if (box.IsEmpty || !pair.Value.SequenceEqual(BoxCoordinates(box))) return false;
+                using (var box = pair.Key.BoundingBox())
+                    if (box.IsEmpty || !pair.Value.SequenceEqual(GeometryFingerprint(pair.Key, box))) return false;
             }
             return true;
         }
-        private static double[] BoxCoordinates(BoundingBox3D box)
+        private static double[] GeometryFingerprint(ModelItem item, BoundingBox3D box)
         {
-            return new[] { box.Min.X, box.Min.Y, box.Min.Z, box.Max.X, box.Max.Y, box.Max.Z };
+            // A half-turn of a square bend can preserve its box while moving both
+            // ports. Include the active native transform when validating caches.
+            return new[] { box.Min.X, box.Min.Y, box.Min.Z, box.Max.X, box.Max.Y, box.Max.Z }
+                .Concat(TrayMeshReader.ActiveTransform(item)).ToArray();
+        }
+
+        private sealed class BendMeshSnapshot
+        {
+            public readonly double[] Fingerprint;
+            public readonly IReadOnlyList<TrayFaceExtent> Faces;
+            public BendMeshSnapshot(double[] fingerprint, IReadOnlyList<TrayFaceExtent> faces)
+            { Fingerprint = fingerprint; Faces = faces; }
+        }
+
+        private static string FindShapeName(ModelItem leaf, ModelItem root)
+        {
+            foreach (var item in leaf.AncestorsAndSelf)
+            {
+                if (ShapeName.IsMatch(item.DisplayName ?? "")) return item.DisplayName;
+                if (item.Equals(root)) break;
+            }
+            return leaf.DisplayName;
         }
 
         private static string FindRouteName(ModelItem leaf, ModelItem root)
@@ -247,16 +324,6 @@ namespace AddinRibbon.Services
                 if (item.Equals(root)) break;
             }
             return !string.IsNullOrWhiteSpace(root.DisplayName) ? root.DisplayName : leaf.DisplayName;
-        }
-        // PoC centreline approximation; CAD curves for elbows/rotated parts are not extracted.
-        private static IEnumerable<RoutePoint> Centerline(BoundingBox3D box, double scale)
-        {
-            var c = box.Center; var size = box.Size;
-            if (size.X >= size.Y && size.X >= size.Z)
-                return new[] { ToMeters(new Point3D(box.Min.X, c.Y, c.Z), scale), ToMeters(new Point3D(box.Max.X, c.Y, c.Z), scale) };
-            if (size.Y >= size.Z)
-                return new[] { ToMeters(new Point3D(c.X, box.Min.Y, c.Z), scale), ToMeters(new Point3D(c.X, box.Max.Y, c.Z), scale) };
-            return new[] { ToMeters(new Point3D(c.X, c.Y, box.Min.Z), scale), ToMeters(new Point3D(c.X, c.Y, box.Max.Z), scale) };
         }
         private static RoutePoint ToMeters(Point3D p, double scale) { return new RoutePoint(p.X * scale, p.Y * scale, p.Z * scale); }
         private void RequireDocument()

@@ -1,14 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 
 namespace AddinRibbon.Routing
 {
     /// <summary>
-    /// Builds a fresh graph of detached tray polylines. Samples discover nearby
-    /// pieces; cross-tray edges join analytical closest contacts only, so arbitrary
-    /// nearby samples cannot shortcut a bend. Disconnected networks remain disconnected.
+    /// Builds a fresh sparse graph of detached tray polylines. An AABB tree finds
+    /// candidate pieces, then cross-tray edges join analytical closest contacts only.
+    /// Vertices, endpoint projections and contacts retain the complete polyline length.
     /// </summary>
     public sealed class RouteCalculator
     {
@@ -24,7 +25,6 @@ namespace AddinRibbon.Routing
             options.Validate();
             // Snapshot mutable UI options before doing background work.
             double tolerance = options.ConnectionToleranceMeters;
-            double spacing = Math.Min(options.SampleSpacingMeters, tolerance / 2);
             double secondaryDistance = options.SecondaryDistanceMeters;
             int maxNodes = options.MaxGraphNodes;
             int maxConnections = options.MaxGraphConnections;
@@ -53,7 +53,7 @@ namespace AddinRibbon.Routing
                 cancellationToken.ThrowIfCancellationRequested();
                 var tray = eligible[segmentIndex];
                 int pieceOffset = pieces.Count;
-                var samples = new List<Sample>();
+                var vertices = new List<Vertex>();
                 var orderedNodes = new List<int>();
                 segmentNodes.Add(orderedNodes);
                 double along = 0;
@@ -63,57 +63,57 @@ namespace AddinRibbon.Routing
                     var start = tray.Points[part];
                     var end = tray.Points[part + 1];
                     double length = start.DistanceTo(end);
-                    int pieceIndex = pieces.Count;
-                    pieces.Add(new Piece(segmentIndex, start, end, along, length));
-                    samples.Add(new Sample(along, start, pieceIndex));
-                    double required = Math.Ceiling(length / spacing);
-                    if (!RoutePoint.IsFinite(required) || required > maxNodes - nodes.Count - samples.Count)
-                        return NodeLimitFailure(maxNodes);
-                    int subdivisions = Math.Max(1, (int)required);
-                    for (int sample = 1; sample <= subdivisions; sample++)
-                    {
-                        if ((sample & 255) == 0) cancellationToken.ThrowIfCancellationRequested();
-                        double fraction = (double)sample / subdivisions;
-                        samples.Add(new Sample(along + length * fraction,
-                            RoutePoint.Interpolate(start, end, fraction), pieceIndex));
-                    }
+                    if (!RoutePoint.IsFinite(length))
+                        return RouteResult.Failure("The selected tray geometry contains a length outside the supported coordinate range.");
+                    if (length > 0) pieces.Add(new Piece(segmentIndex, start, end, along, length,
+                        tray.ConnectionsAtEndsOnly, pieces.Count == pieceOffset));
+                    vertices.Add(new Vertex(along, start));
                     along += length;
                 }
-                if (first.Segment == segmentIndex) samples.Add(new Sample(first.Along, first.Point, pieceOffset + first.Part));
-                if (last.Segment == segmentIndex) samples.Add(new Sample(last.Along, last.Point, pieceOffset + last.Part));
-                samples.Sort((left, right) => left.Along.CompareTo(right.Along));
+                if (pieces.Count == pieceOffset)
+                    pieces.Add(new Piece(segmentIndex, tray.Points[0], tray.Points[0], 0, 0,
+                        tray.ConnectionsAtEndsOnly, true));
+                var lastPiece = pieces[pieces.Count - 1];
+                lastPiece.HasEndPort = true;
+                pieces[pieces.Count - 1] = lastPiece;
+                vertices.Add(new Vertex(along, tray.Points[tray.Points.Count - 1]));
+                if (first.Segment == segmentIndex) vertices.Add(new Vertex(first.Along, first.Point));
+                if (last.Segment == segmentIndex) vertices.Add(new Vertex(last.Along, last.Point));
+                vertices.Sort((left, right) => left.Along.CompareTo(right.Along));
                 int previous = -1;
                 double previousAlong = double.NaN;
-                foreach (var sample in samples)
+                foreach (var vertex in vertices)
                 {
                     // Equal abscissae are the same vertex, even at a zero-length piece.
                     int index;
-                    if (previous >= 0 && sample.Along == previousAlong) index = previous;
+                    if (previous >= 0 && vertex.Along == previousAlong) index = previous;
                     else
                     {
                         if (nodes.Count >= maxNodes) return NodeLimitFailure(maxNodes);
                         index = nodes.Count;
-                        nodes.Add(new Node(sample.Point, segmentIndex, sample.Along));
+                        nodes.Add(new Node(vertex.Point, segmentIndex, vertex.Along));
                         orderedNodes.Add(index);
-                        if (previous >= 0) Connect(nodes, previous, index,
-                            nodes[previous].Point.DistanceTo(sample.Point));
                         previous = index;
-                        previousAlong = sample.Along;
+                        previousAlong = vertex.Along;
                     }
-                    if (!nodes[index].Pieces.Contains(sample.Piece)) nodes[index].Pieces.Add(sample.Piece);
-                    if (first.Segment == segmentIndex && sample.Along == first.Along) firstNode = index;
-                    if (last.Segment == segmentIndex && sample.Along == last.Along) lastNode = index;
+                    if (first.Segment == segmentIndex && vertex.Along == first.Along) firstNode = index;
+                    if (last.Segment == segmentIndex && vertex.Along == last.Along) lastNode = index;
                 }
             }
 
-            bool connectionLimitReached;
+            GraphLimit limit;
             if (!AddNeighbourConnections(nodes, pieces, segmentNodes, tolerance, maxNodes,
-                maxConnections, cancellationToken, out connectionLimitReached))
-                return connectionLimitReached ? ConnectionLimitFailure(maxConnections) : NodeLimitFailure(maxNodes);
+                maxConnections, cancellationToken, out limit))
+                return limit == GraphLimit.Connections ? ConnectionLimitFailure(maxConnections) :
+                    limit == GraphLimit.Candidates ? CandidateLimitFailure(maxConnections) : NodeLimitFailure(maxNodes);
             double graphLength;
             var path = ShortestPath(nodes, firstNode, lastNode, cancellationToken, out graphLength);
             if (path == null)
-                return RouteResult.Failure("The nearest eligible trays are disconnected at the selected connection tolerance.");
+                return RouteResult.Failure("Nearest From tray " + eligible[first.Segment].RouteCode +
+                    " (" + first.Distance.ToString("0.###", CultureInfo.InvariantCulture) + " m from object) and To tray " +
+                    eligible[last.Segment].RouteCode + " (" + last.Distance.ToString("0.###", CultureInfo.InvariantCulture) +
+                    " m from object) are disconnected at " + tolerance.ToString("0.###", CultureInfo.InvariantCulture) +
+                    " m connection tolerance. Check route assignments and geometry between these trays.");
 
             var codes = new List<string>();
             var segmentIds = new List<string>();
@@ -139,7 +139,7 @@ namespace AddinRibbon.Routing
         private static RouteResult NodeLimitFailure(int maxNodes)
         {
             return RouteResult.Failure("The selected tray geometry exceeds the " + maxNodes +
-                " routing-node limit. Select a smaller tray area or increase the sample spacing and connection tolerance.");
+                " routing-node limit. Select a smaller tray area or simplify the tray geometry.");
         }
 
         private static RouteResult ConnectionLimitFailure(int maxConnections)
@@ -147,6 +147,14 @@ namespace AddinRibbon.Routing
             return RouteResult.Failure("The selected tray geometry exceeds the " + maxConnections +
                 " routing-connection limit. Select a smaller tray area or use a tighter connection tolerance.");
         }
+
+        private static RouteResult CandidateLimitFailure(int maxConnections)
+        {
+            return RouteResult.Failure("The selected tray geometry exceeds the " + CandidateLimit(maxConnections) +
+                " routing-candidate limit. Too many overlapping piece bounds need comparison. Select a smaller tray area.");
+        }
+
+        private static long CandidateLimit(int maxConnections) { return 8L * maxConnections; }
 
         private static void AppendTransition(List<string> values, string value)
         {
@@ -195,85 +203,130 @@ namespace AddinRibbon.Routing
 
         private static bool AddNeighbourConnections(List<Node> nodes, List<Piece> pieces,
             List<List<int>> segmentNodes, double tolerance, int maxNodes, int maxConnections,
-            CancellationToken token, out bool connectionLimitReached)
+            CancellationToken token, out GraphLimit limit)
         {
-            connectionLimitReached = false;
-            int connections = nodes.Sum(node => node.Edges.Count) / 2;
-            if (connections > maxConnections) { connectionLimitReached = true; return false; }
-            var cells = new Dictionary<Cell, List<int>>();
-            var checkedPieces = new HashSet<long>();
-            int comparisons = 0;
-            int sampleCount = nodes.Count;
-            for (int index = 0; index < sampleCount; index++)
+            var graph = new ContactGraph(nodes, segmentNodes, maxNodes, maxConnections);
+            if (graph.Limit != GraphLimit.None) { limit = graph.Limit; return false; }
+            var indices = Enumerable.Range(0, pieces.Count).ToArray();
+            var tree = BuildAabbTree(pieces, indices, 0, indices.Length, token);
+            long candidates = 0;
+            int treeVisits = 0;
+            for (int index = 0; index < pieces.Count; index++)
             {
                 if ((index & 127) == 0) token.ThrowIfCancellationRequested();
-                var node = nodes[index];
-                var cell = Cell.ForPoint(node.Point, tolerance);
-                // Half-tolerance sample spacing means a real contact always has
-                // samples within two hash cells, even at the tolerance boundary.
-                for (long dx = -2; dx <= 2; dx++)
-                for (long dy = -2; dy <= 2; dy++)
-                for (long dz = -2; dz <= 2; dz++)
+                if (!VisitCandidates(tree, indices, pieces, index, tolerance, graph,
+                    token, ref candidates, CandidateLimit(maxConnections), ref treeVisits))
                 {
-                    List<int> nearby;
-                    if (!cells.TryGetValue(new Cell(cell.X + dx, cell.Y + dy, cell.Z + dz), out nearby)) continue;
-                    foreach (int candidateIndex in nearby)
-                    {
-                        if ((++comparisons & 255) == 0) token.ThrowIfCancellationRequested();
-                        var candidate = nodes[candidateIndex];
-                        if (candidate.Segment == node.Segment) continue;
-                        foreach (int firstPiece in node.Pieces)
-                        foreach (int lastPiece in candidate.Pieces)
-                        {
-                            long pair = ((long)Math.Min(firstPiece, lastPiece) << 32) | (uint)Math.Max(firstPiece, lastPiece);
-                            if (!checkedPieces.Add(pair)) continue;
-                            double firstFraction, lastFraction, secondFirstFraction, secondLastFraction;
-                            bool overlap = ParallelContactRange(pieces[firstPiece], pieces[lastPiece],
-                                out firstFraction, out lastFraction, out secondFirstFraction, out secondLastFraction);
-                            if (!overlap) ClosestPoints(pieces[firstPiece], pieces[lastPiece], out firstFraction, out lastFraction);
-                            if (!AddExactContact(nodes, segmentNodes, pieces[firstPiece], pieces[lastPiece],
-                                firstFraction, lastFraction, tolerance, maxNodes, ref connections,
-                                maxConnections, out connectionLimitReached)) return false;
-                            // Parallel overlap has infinitely many closest points.
-                            // Both boundaries retain continuous travel without picking
-                            // an arbitrary sample or forcing a detour to one overlap end.
-                            if (overlap && secondFirstFraction != firstFraction &&
-                                !AddExactContact(nodes, segmentNodes, pieces[firstPiece], pieces[lastPiece],
-                                    secondFirstFraction, secondLastFraction, tolerance, maxNodes,
-                                    ref connections, maxConnections, out connectionLimitReached)) return false;
-                        }
-                    }
+                    limit = graph.Limit == GraphLimit.None ? GraphLimit.Candidates : graph.Limit;
+                    return false;
                 }
-                List<int> bucket;
-                if (!cells.TryGetValue(cell, out bucket))
+            }
+            graph.BuildEdges(token);
+            limit = GraphLimit.None;
+            return true;
+        }
+
+        private static AabbNode BuildAabbTree(List<Piece> pieces, int[] indices, int start,
+            int count, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            var bounds = pieces[indices[start]].Bounds;
+            var center = bounds.CenterPoint;
+            var centers = new Bounds(center, center);
+            for (int offset = 1; offset < count; offset++)
+            {
+                if ((offset & 255) == 0) token.ThrowIfCancellationRequested();
+                var pieceBounds = pieces[indices[start + offset]].Bounds;
+                bounds = Bounds.Union(bounds, pieceBounds);
+                center = pieceBounds.CenterPoint;
+                centers = Bounds.Union(centers, new Bounds(center, center));
+            }
+            var node = new AabbNode(bounds, start, count);
+            if (count <= 8) return node;
+            // Split by the spread of centres, not long piece extents: parallel
+            // 100 m pieces can differ only in Y even when their X extent dominates.
+            int axis = centers.LongestAxis;
+            Array.Sort(indices, start, count, new PieceComparer(pieces, axis));
+            token.ThrowIfCancellationRequested();
+            int leftCount = count / 2;
+            node.Left = BuildAabbTree(pieces, indices, start, leftCount, token);
+            node.Right = BuildAabbTree(pieces, indices, start + leftCount, count - leftCount, token);
+            return node;
+        }
+
+        private static bool VisitCandidates(AabbNode node, int[] indices, List<Piece> pieces,
+            int firstIndex, double tolerance, ContactGraph graph, CancellationToken token,
+            ref long candidates, long maxCandidates, ref int treeVisits)
+        {
+            if ((++treeVisits & 255) == 0) token.ThrowIfCancellationRequested();
+            var first = pieces[firstIndex];
+            if (!Bounds.WithinTolerance(first.Bounds, node.Bounds, tolerance)) return true;
+            if (node.Left != null)
+                return VisitCandidates(node.Left, indices, pieces, firstIndex, tolerance,
+                    graph, token, ref candidates, maxCandidates, ref treeVisits) &&
+                    VisitCandidates(node.Right, indices, pieces, firstIndex, tolerance,
+                    graph, token, ref candidates, maxCandidates, ref treeVisits);
+            for (int offset = 0; offset < node.Count; offset++)
+            {
+                int lastIndex = indices[node.Start + offset];
+                if (lastIndex <= firstIndex) continue;
+                var last = pieces[lastIndex];
+                if (last.Segment == first.Segment ||
+                    !Bounds.WithinTolerance(first.Bounds, last.Bounds, tolerance)) continue;
+                if (++candidates > maxCandidates) return false;
+                if ((candidates & 255) == 0) token.ThrowIfCancellationRequested();
+                if (first.EndsOnly || last.EndsOnly)
                 {
-                    bucket = new List<int>();
-                    cells.Add(cell, bucket);
+                    if (!AddPortContacts(first, last, graph, tolerance)) return false;
+                    continue;
                 }
-                bucket.Add(index);
+                double firstFraction, lastFraction, highFirst, highLast;
+                bool overlap = ParallelContactRange(first, last,
+                    out firstFraction, out lastFraction, out highFirst, out highLast);
+                if (!overlap) ClosestPoints(first, last, out firstFraction, out lastFraction);
+                if (!graph.AddContact(first, last, firstFraction, lastFraction, tolerance)) return false;
+                // Parallel overlap has infinitely many closest contacts. Its two
+                // boundaries preserve travel without forcing a detour to one end.
+                if (overlap && highFirst != firstFraction &&
+                    !graph.AddContact(first, last, highFirst, highLast, tolerance)) return false;
             }
             return true;
         }
 
-        private static bool AddExactContact(List<Node> nodes, List<List<int>> segmentNodes,
-            Piece first, Piece last, double firstFraction, double lastFraction,
-            double tolerance, int maxNodes, ref int connections, int maxConnections,
-            out bool connectionLimitReached)
+        private static bool AddPortContacts(Piece first, Piece last, ContactGraph graph, double tolerance)
         {
-            connectionLimitReached = false;
-            var firstPoint = RoutePoint.Interpolate(first.Start, first.End, firstFraction);
-            var lastPoint = RoutePoint.Interpolate(last.Start, last.End, lastFraction);
-            double distance = firstPoint.DistanceTo(lastPoint);
-            if (distance > tolerance) return true;
-            int firstNode = InsertContact(nodes, segmentNodes, first, firstPoint,
-                firstFraction, maxNodes, ref connections, maxConnections, out connectionLimitReached);
-            if (firstNode < 0) return false;
-            int lastNode = InsertContact(nodes, segmentNodes, last, lastPoint,
-                lastFraction, maxNodes, ref connections, maxConnections, out connectionLimitReached);
-            if (lastNode < 0) return false;
-            if (ConnectWithLimit(nodes, firstNode, lastNode, distance, ref connections, maxConnections)) return true;
-            connectionLimitReached = true;
-            return false;
+            if (first.EndsOnly)
+            {
+                if (first.HasStartPort && !AddPortContact(first, last, 0, graph, tolerance)) return false;
+                if (first.HasEndPort && !AddPortContact(first, last, 1, graph, tolerance)) return false;
+                return true;
+            }
+            if (last.HasStartPort && !graph.AddContact(first, last,
+                ProjectionFraction(first, last.Start), 0, tolerance)) return false;
+            if (last.HasEndPort && !graph.AddContact(first, last,
+                ProjectionFraction(first, last.End), 1, tolerance)) return false;
+            return true;
+        }
+
+        private static bool AddPortContact(Piece first, Piece last, double firstFraction,
+            ContactGraph graph, double tolerance)
+        {
+            if (last.EndsOnly)
+            {
+                if (last.HasStartPort && !graph.AddContact(first, last, firstFraction, 0, tolerance)) return false;
+                if (last.HasEndPort && !graph.AddContact(first, last, firstFraction, 1, tolerance)) return false;
+                return true;
+            }
+            var point = firstFraction == 0 ? first.Start : first.End;
+            return graph.AddContact(first, last, firstFraction, ProjectionFraction(last, point), tolerance);
+        }
+
+        private static double ProjectionFraction(Piece piece, RoutePoint target)
+        {
+            double x = piece.End.X - piece.Start.X, y = piece.End.Y - piece.Start.Y, z = piece.End.Z - piece.Start.Z;
+            double lengthSquared = x * x + y * y + z * z;
+            return lengthSquared == 0 ? 0 : Clamp(((target.X - piece.Start.X) * x +
+                (target.Y - piece.Start.Y) * y + (target.Z - piece.Start.Z) * z) / lengthSquared);
         }
 
         private static bool ParallelContactRange(Piece first, Piece last,
@@ -301,42 +354,6 @@ namespace AddinRibbon.Routing
             return true;
         }
 
-        private static int InsertContact(List<Node> nodes, List<List<int>> segmentNodes,
-            Piece piece, RoutePoint point, double fraction, int maxNodes, ref int connections,
-            int maxConnections, out bool connectionLimitReached)
-        {
-            connectionLimitReached = false;
-            double along = piece.Along + piece.Length * fraction;
-            var ordered = segmentNodes[piece.Segment];
-            int low = 0, high = ordered.Count;
-            while (low < high)
-            {
-                int middle = low + (high - low) / 2;
-                if (nodes[ordered[middle]].Along < along) low = middle + 1;
-                else high = middle;
-            }
-            if (low < ordered.Count && nodes[ordered[low]].Along == along) return ordered[low];
-            if (nodes.Count >= maxNodes) return -1;
-            int index = nodes.Count;
-            nodes.Add(new Node(point, piece.Segment, along));
-            if (low > 0 && !ConnectWithLimit(nodes, ordered[low - 1], index,
-                nodes[ordered[low - 1]].Point.DistanceTo(point), ref connections, maxConnections))
-            { connectionLimitReached = true; return -1; }
-            if (low < ordered.Count && !ConnectWithLimit(nodes, index, ordered[low],
-                point.DistanceTo(nodes[ordered[low]].Point), ref connections, maxConnections))
-            { connectionLimitReached = true; return -1; }
-            ordered.Insert(low, index);
-            return index;
-        }
-
-        private static bool ConnectWithLimit(List<Node> nodes, int first, int last, double distance,
-            ref int connections, int maxConnections)
-        {
-            if (connections >= maxConnections) return false;
-            Connect(nodes, first, last, distance);
-            connections++;
-            return true;
-        }
 
         private static void ClosestPoints(Piece first, Piece last, out double s, out double t)
         {
@@ -409,7 +426,6 @@ namespace AddinRibbon.Routing
             internal readonly int Segment;
             internal readonly double Along;
             internal readonly List<Edge> Edges = new List<Edge>();
-            internal readonly List<int> Pieces = new List<int>();
             internal Node(RoutePoint point, int segment, double along) { Point = point; Segment = segment; Along = along; }
         }
 
@@ -420,12 +436,11 @@ namespace AddinRibbon.Routing
             internal Edge(int node, double length) { Node = node; Length = length; }
         }
 
-        private struct Sample
+        private struct Vertex
         {
             internal readonly double Along;
             internal readonly RoutePoint Point;
-            internal readonly int Piece;
-            internal Sample(double along, RoutePoint point, int piece) { Along = along; Point = point; Piece = piece; }
+            internal Vertex(double along, RoutePoint point) { Along = along; Point = point; }
         }
 
         private struct Piece
@@ -433,9 +448,15 @@ namespace AddinRibbon.Routing
             internal readonly int Segment;
             internal readonly RoutePoint Start, End;
             internal readonly double Along, Length;
-            internal Piece(int segment, RoutePoint start, RoutePoint end, double along, double length)
+            internal readonly Bounds Bounds;
+            internal readonly bool EndsOnly, HasStartPort;
+            internal bool HasEndPort;
+            internal Piece(int segment, RoutePoint start, RoutePoint end, double along, double length,
+                bool endsOnly, bool hasStartPort)
             {
                 Segment = segment; Start = start; End = end; Along = along; Length = length;
+                Bounds = new Bounds(start, end);
+                EndsOnly = endsOnly; HasStartPort = hasStartPort; HasEndPort = false;
             }
         }
 
@@ -448,20 +469,148 @@ namespace AddinRibbon.Routing
             internal double Distance;
         }
 
-        private struct Cell : IEquatable<Cell>
+        private enum GraphLimit { None, Nodes, Connections, Candidates }
+
+        private sealed class ContactGraph
         {
-            internal readonly long X, Y, Z;
-            internal Cell(long x, long y, long z) { X = x; Y = y; Z = z; }
-            internal static Cell ForPoint(RoutePoint point, double size)
+            private readonly List<Node> nodes;
+            private readonly List<List<int>> segmentNodes;
+            private readonly int maxNodes, maxConnections;
+            private readonly List<Connection> crossConnections = new List<Connection>();
+            private readonly HashSet<long> connectedNodes = new HashSet<long>();
+            private int connections;
+            internal GraphLimit Limit { get; private set; }
+
+            internal ContactGraph(List<Node> nodes, List<List<int>> segmentNodes, int maxNodes, int maxConnections)
             {
-                return new Cell((long)Math.Floor(point.X / size),
-                    (long)Math.Floor(point.Y / size), (long)Math.Floor(point.Z / size));
+                this.nodes = nodes; this.segmentNodes = segmentNodes;
+                this.maxNodes = maxNodes; this.maxConnections = maxConnections;
+                foreach (var ordered in segmentNodes) connections += ordered.Count - 1;
+                if (connections > maxConnections) Limit = GraphLimit.Connections;
             }
-            public bool Equals(Cell other) { return X == other.X && Y == other.Y && Z == other.Z; }
-            public override bool Equals(object obj) { return obj is Cell && Equals((Cell)obj); }
-            public override int GetHashCode()
+
+            internal bool AddContact(Piece first, Piece last, double firstFraction, double lastFraction, double tolerance)
             {
-                unchecked { return ((X.GetHashCode() * 397) ^ Y.GetHashCode()) * 397 ^ Z.GetHashCode(); }
+                var firstPoint = RoutePoint.Interpolate(first.Start, first.End, firstFraction);
+                var lastPoint = RoutePoint.Interpolate(last.Start, last.End, lastFraction);
+                double distance = firstPoint.DistanceTo(lastPoint);
+                if (distance > tolerance) return true;
+                int firstNode = Insert(first, firstPoint, firstFraction);
+                if (firstNode < 0) return false;
+                int lastNode = Insert(last, lastPoint, lastFraction);
+                if (lastNode < 0) return false;
+                long key = ((long)Math.Min(firstNode, lastNode) << 32) | (uint)Math.Max(firstNode, lastNode);
+                if (!connectedNodes.Add(key)) return true;
+                if (connections >= maxConnections) { Limit = GraphLimit.Connections; return false; }
+                crossConnections.Add(new Connection(firstNode, lastNode, distance));
+                connections++;
+                return true;
+            }
+
+            private int Insert(Piece piece, RoutePoint point, double fraction)
+            {
+                double along = piece.Along + piece.Length * fraction;
+                var ordered = segmentNodes[piece.Segment];
+                int low = 0, high = ordered.Count;
+                while (low < high)
+                {
+                    int middle = low + (high - low) / 2;
+                    if (nodes[ordered[middle]].Along < along) low = middle + 1;
+                    else high = middle;
+                }
+                if (low < ordered.Count && nodes[ordered[low]].Along == along) return ordered[low];
+                if (nodes.Count >= maxNodes) { Limit = GraphLimit.Nodes; return -1; }
+                // Splitting one continuous polyline edge introduces one new edge.
+                if (connections >= maxConnections) { Limit = GraphLimit.Connections; return -1; }
+                int index = nodes.Count;
+                nodes.Add(new Node(point, piece.Segment, along));
+                ordered.Insert(low, index);
+                connections++;
+                return index;
+            }
+
+            internal void BuildEdges(CancellationToken token)
+            {
+                int built = 0;
+                foreach (var ordered in segmentNodes)
+                    for (int offset = 1; offset < ordered.Count; offset++)
+                    {
+                        if ((++built & 255) == 0) token.ThrowIfCancellationRequested();
+                        int first = ordered[offset - 1], last = ordered[offset];
+                        Connect(nodes, first, last, nodes[last].Along - nodes[first].Along);
+                    }
+                foreach (var connection in crossConnections)
+                {
+                    if ((++built & 255) == 0) token.ThrowIfCancellationRequested();
+                    Connect(nodes, connection.First, connection.Last, connection.Length);
+                }
+                token.ThrowIfCancellationRequested();
+            }
+        }
+
+        private struct Connection
+        {
+            internal readonly int First, Last;
+            internal readonly double Length;
+            internal Connection(int first, int last, double length) { First = first; Last = last; Length = length; }
+        }
+
+        private struct Bounds
+        {
+            internal readonly double MinX, MinY, MinZ, MaxX, MaxY, MaxZ;
+            internal Bounds(RoutePoint first, RoutePoint last)
+            {
+                MinX = Math.Min(first.X, last.X); MinY = Math.Min(first.Y, last.Y); MinZ = Math.Min(first.Z, last.Z);
+                MaxX = Math.Max(first.X, last.X); MaxY = Math.Max(first.Y, last.Y); MaxZ = Math.Max(first.Z, last.Z);
+            }
+            private Bounds(double minX, double minY, double minZ, double maxX, double maxY, double maxZ)
+            { MinX = minX; MinY = minY; MinZ = minZ; MaxX = maxX; MaxY = maxY; MaxZ = maxZ; }
+            internal static Bounds Union(Bounds first, Bounds last)
+            {
+                return new Bounds(Math.Min(first.MinX, last.MinX), Math.Min(first.MinY, last.MinY), Math.Min(first.MinZ, last.MinZ),
+                    Math.Max(first.MaxX, last.MaxX), Math.Max(first.MaxY, last.MaxY), Math.Max(first.MaxZ, last.MaxZ));
+            }
+            internal int LongestAxis
+            {
+                get
+                {
+                    double x = MaxX - MinX, y = MaxY - MinY, z = MaxZ - MinZ;
+                    return x >= y && x >= z ? 0 : y >= z ? 1 : 2;
+                }
+            }
+            internal double Center(int axis)
+            {
+                return axis == 0 ? MinX + (MaxX - MinX) / 2 :
+                    axis == 1 ? MinY + (MaxY - MinY) / 2 : MinZ + (MaxZ - MinZ) / 2;
+            }
+            internal RoutePoint CenterPoint { get { return new RoutePoint(Center(0), Center(1), Center(2)); } }
+            internal static bool WithinTolerance(Bounds first, Bounds last, double tolerance)
+            {
+                double x = Math.Max(0, Math.Max(first.MinX - last.MaxX, last.MinX - first.MaxX));
+                double y = Math.Max(0, Math.Max(first.MinY - last.MaxY, last.MinY - first.MaxY));
+                double z = Math.Max(0, Math.Max(first.MinZ - last.MaxZ, last.MinZ - first.MaxZ));
+                return x <= tolerance && y <= tolerance && z <= tolerance &&
+                    x * x + y * y + z * z <= tolerance * tolerance;
+            }
+        }
+
+        private sealed class AabbNode
+        {
+            internal readonly Bounds Bounds;
+            internal readonly int Start, Count;
+            internal AabbNode Left, Right;
+            internal AabbNode(Bounds bounds, int start, int count) { Bounds = bounds; Start = start; Count = count; }
+        }
+
+        private sealed class PieceComparer : IComparer<int>
+        {
+            private readonly List<Piece> pieces;
+            private readonly int axis;
+            internal PieceComparer(List<Piece> pieces, int axis) { this.pieces = pieces; this.axis = axis; }
+            public int Compare(int first, int last)
+            {
+                int compared = pieces[first].Bounds.Center(axis).CompareTo(pieces[last].Bounds.Center(axis));
+                return compared != 0 ? compared : first.CompareTo(last);
             }
         }
 

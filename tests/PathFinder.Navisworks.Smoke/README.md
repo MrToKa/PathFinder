@@ -31,10 +31,12 @@ To compile the helpers without starting Navisworks or checking installation:
 ./scripts/Test-Navisworks.ps1 -BuildOnly
 ```
 
-The runner calls the smoke plugin for 32 checks in the native host. It checks the deepest
+The runner calls the smoke plugin for 34 checks in the native host. It checks the deepest
 leaf traversal and overlapping rules; metre conversion; missing/duplicate
 objects; cancellation; model-transform invalidation and captured item
-fingerprints; temporary appearance, opacity, reversal, restoration and
+fingerprints, including a half-turn that preserves the world bounding box;
+native name searches that cache only requested names and reuse case/trim variants;
+temporary appearance, opacity, reversal, restoration and
 disposal; dock registration; two tabs, the Pause default and manual calculation;
 the actual Assign/Pick/Calculate/Show/Reverse/Restore UI handlers; native docking
 metadata and parent reset/resize/reparent layout; render-plugin loading, units,
