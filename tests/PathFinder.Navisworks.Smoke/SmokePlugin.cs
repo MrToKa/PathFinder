@@ -655,7 +655,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                 SavePreview(control, "pathfinder-parented-path-preview.png");
             }
         });
-        Check("two_tabs_and_pause_default_allow_manual_calculation", () =>
+        Check("two_tabs_use_permanent_manual_mode_without_pause_checkbox_or_timer", () =>
         {
             using (var control = new PathFinderControl())
             {
@@ -665,11 +665,9 @@ public sealed class PathFinderSmoke : AddInPlugin
                 var descendants = ControlsOf(control).ToList();
                 var tabs = descendants.OfType<TabControl>().Single();
                 Assert(tabs.TabPages.Count == 2 && tabs.TabPages[0].Text == "Routes" && tabs.TabPages[1].Text == "Path", "Expected Routes and Path tabs.");
-                Assert(descendants.OfType<CheckBox>().Single(item => item.Text == "Pause automatic calculation").Checked, "Pause is not checked.");
-                Assert(descendants.OfType<Button>().Single(item => item.Text == "Calculate path").Enabled, "Manual Calculate path disabled by Pause.");
+                AssertManualMode(control);
+                Assert(descendants.OfType<Button>().Single(item => item.Text == "Calculate path").Enabled, "Manual Calculate path disabled.");
                 Assert((string)descendants.OfType<ComboBox>().Single().SelectedItem == "LV", "Cable type default is not LV.");
-                var timer = (System.Windows.Forms.Timer)typeof(PathFinderControl).GetField("debounce", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(control);
-                Assert(!timer.Enabled, "Automatic calculation timer running by default.");
                 SavePreview(control, "pathfinder-routes-preview.png");
                 tabs.SelectedIndex = 1;
                 control.PerformLayout();
@@ -717,7 +715,8 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(approach.Checked && approach.Enabled && !approach.ThreeState,
                     "The UI approach option is not an enabled two-state checkbox checked by default.");
                 approach.Checked = false;
-                Assert(!approach.Checked && Field<CheckBox>(control, "pause").Checked, "Selecting shortest-3D approach changed Pause.");
+                Assert(!approach.Checked, "Selecting shortest-3D approach did not retain the option.");
+                AssertManualMode(control);
                 try
                 {
                     Invoke(control, "StartOperation", "Testing approach state during capture.");
@@ -853,6 +852,15 @@ public sealed class PathFinderSmoke : AddInPlugin
         }
     }
 
+    private static void AssertManualMode(PathFinderControl control)
+    {
+        Assert(!ControlsOf(control).OfType<CheckBox>().Any(item => item.Text == "Pause automatic calculation"),
+            "The removed Pause checkbox remains in the panel.");
+        Assert(!typeof(PathFinderControl).GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .Any(field => field.FieldType == typeof(System.Windows.Forms.Timer)),
+            "The permanent manual mode still owns an automatic calculation timer.");
+    }
+
     private static void AssertHostLayout(Panel host, PathFinderControl control)
     {
         control.PerformLayout();
@@ -971,8 +979,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                     TranslateSmokeItemInMeters(endpoints[1], NativeBasePointInMeters(endpoints[1]), expectedTo);
                     document.CurrentSelection.CopyFrom(new[] { endpoints[0] }); Invoke(control, "Pick", true);
                     document.CurrentSelection.CopyFrom(new[] { endpoints[1] }); Invoke(control, "Pick", false);
-                    var approach = Field<CheckBox>(control, "verticalApproach"); var pause = Field<CheckBox>(control, "pause");
-                    var timer = Field<System.Windows.Forms.Timer>(control, "debounce");
+                    var approach = Field<CheckBox>(control, "verticalApproach");
                     Field<NumericUpDown>(control, "gap").Value = 0.25m;
                     var nearest = new RouteCalculator().Calculate(selected, expectedFrom, expectedTo, CableCategory.LV,
                         new RoutingOptions { ConnectionToleranceMeters = 0.25, PreferVerticalApproach = false });
@@ -987,7 +994,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                     foreach (bool preferVertical in new[] { true, false })
                     {
                         approach.Checked = preferVertical;
-                        Assert(pause.Checked && !timer.Enabled, "Changing approach preference enabled automatic calculation while paused.");
+                        AssertManualMode(control);
                         Wait((Task)Invoke(control, "CalculateAsync"));
                         var actual = Field<RouteResult>(control, "result"); var expected = preferVertical ? vertical : nearest;
                         AssertUiBasePoints(control, actual, expectedFrom, expectedTo);
@@ -1010,13 +1017,22 @@ public sealed class PathFinderSmoke : AddInPlugin
                             "Changing approach mode retained a stale calculation.");
                         Assert(!Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
                             "Changing approach mode retained the previous rendered attachments.");
-                        Assert(pause.Checked && !timer.Enabled && Field<Button>(control, "calculate").Enabled,
-                            "Paused approach edit started automatic work or disabled manual Calculate.");
+                        AssertManualMode(control);
+                        Assert(Field<Button>(control, "calculate").Enabled, "Approach edit disabled manual Calculate.");
                     }
-                    pause.Checked = false; approach.Checked = !approach.Checked;
-                    Assert(timer.Enabled && !Field<bool>(control, "busy"), "Unpaused approach edit did not schedule the normal debounced calculation.");
-                    pause.Checked = true;
-                    Assert(!timer.Enabled, "Re-enabling Pause did not stop the pending approach calculation.");
+                    approach.Checked = !approach.Checked;
+                    // Valid routes and endpoints remain assigned. Pump the host
+                    // beyond the former debounce delay; edits must stay manual.
+                    Field<TextBox>(control, "from").Text += " ";
+                    Field<ComboBox>(control, "cableType").SelectedIndex = 2;
+                    Field<NumericUpDown>(control, "gap").Value = 0.30m;
+                    Field<NumericUpDown>(control, "secondaryDistance").Value = 3m;
+                    Invoke(control, "ReversePath");
+                    Wait(Task.Delay(1000));
+                    AssertManualMode(control);
+                    Assert(!Field<bool>(control, "busy") && Field<RouteResult>(control, "result") == null,
+                        "Editing valid inputs or reversing an empty result started automatic calculation.");
+                    Assert(Field<Button>(control, "calculate").Enabled, "Manual Calculate became unavailable after edits.");
                 }
             }
             finally
@@ -1048,11 +1064,10 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(session.Assignments.Count == 1 && session.Assignments[0].LeafCount == 1, "UI did not capture selected route leaf.");
                 document.CurrentSelection.CopyFrom(new[] { fromLeaf }); Invoke(control, "Pick", true);
                 document.CurrentSelection.CopyFrom(new[] { toLeaf }); Invoke(control, "Pick", false);
-                var pause = Field<CheckBox>(control, "pause");
-                Assert(pause.Checked, "Manual UI flow unexpectedly unpaused automatic calculation.");
+                AssertManualMode(control);
                 Wait((Task)Invoke(control, "CalculateAsync"));
                 var result = Field<RouteResult>(control, "result");
-                Assert(result != null && result.Success, "Manual calculation failed while Pause checked: " + Field<TextBox>(control, "output").Text);
+                Assert(result != null && result.Success, "Manual calculation failed: " + Field<TextBox>(control, "output").Text);
                 AssertUiBasePoints(control, result, expectedFrom, expectedTo);
                 Assert(result.ConnectionGapCount == 0 && result.ConnectionGapLengthMeters == 0,
                     "A single native tray counted equipment attachment legs as connection gaps.");
@@ -1075,8 +1090,8 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Field<TextBox>(control, "from").Text = "PF_SMOKE_MISSING_EDIT";
                 Assert(Field<RouteResult>(control, "result") == null, "Changing an endpoint kept the old result.");
                 Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Endpoint edit retained the previous cable overlay.");
-                Assert(!Field<System.Windows.Forms.Timer>(control, "debounce").Enabled, "Paused endpoint edit started an automatic calculation.");
-                Assert(Field<Button>(control, "calculate").Enabled, "Pause disabled manual Calculate path after editing.");
+                AssertManualMode(control);
+                Assert(Field<Button>(control, "calculate").Enabled, "Endpoint editing disabled manual Calculate path.");
             }
             AssertAppearance(before, true, true);
         });
@@ -1113,8 +1128,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                         Invoke(control, "ShowPath");
                         Assert(Field<RouteResult>(control, "result") == null && !Field<PathVisualization>(control, "visualization").IsShown
                             && RoutePathOverlay.DisplayedPoints.Count == 0, "Show accepted a result with an outdated endpoint base point.");
-                        Assert(Field<CheckBox>(control, "pause").Checked && !Field<System.Windows.Forms.Timer>(control, "debounce").Enabled,
-                            "Rejecting a stale base point enabled automatic calculation.");
+                        AssertManualMode(control);
                         Wait((Task)Invoke(control, "CalculateAsync"));
                         var recalculated = Field<RouteResult>(control, "result");
                         AssertUiBasePoints(control, recalculated, NativeBasePointInMeters(routeLeaf), changedTo);
@@ -1140,7 +1154,7 @@ public sealed class PathFinderSmoke : AddInPlugin
             Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Disposed control retained the cable overlay.");
             AssertAppearance(before, true, true);
         });
-        Check("secondary_threshold_manual_calculation_pause_invalidation_and_reverse", () =>
+        Check("secondary_threshold_manual_only_calculation_invalidation_and_reverse", () =>
         {
             var before = Snapshot(geometry);
             using (var control = new PathFinderControl())
@@ -1157,9 +1171,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                 document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Invoke(control, "Pick", true);
                 document.CurrentSelection.CopyFrom(new[] { endpoint.Item }); Invoke(control, "Pick", false);
                 var threshold = Field<NumericUpDown>(control, "secondaryDistance");
-                var pause = Field<CheckBox>(control, "pause");
-                var debounce = Field<System.Windows.Forms.Timer>(control, "debounce");
-                Assert(pause.Checked, "SECONDARY fixture unexpectedly unpaused automatic calculation.");
+                AssertManualMode(control);
                 threshold.Value = threshold.Maximum;
                 Wait((Task)Invoke(control, "CalculateAsync"));
                 var high = Field<RouteResult>(control, "result");
@@ -1173,8 +1185,8 @@ public sealed class PathFinderSmoke : AddInPlugin
                     "Changing SECONDARY distance retained the old result.");
                 Assert(!Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
                     "Changing SECONDARY distance retained the old view or cable overlay.");
-                Assert(!debounce.Enabled && pause.Checked && Field<Button>(control, "calculate").Enabled,
-                    "Paused threshold edit started automatic calculation or blocked manual calculation.");
+                AssertManualMode(control);
+                Assert(Field<Button>(control, "calculate").Enabled, "Threshold edit blocked manual calculation.");
                 Assert(Field<Label>(control, "secondaryExplanation").Text.Contains(threshold.Value.ToString("F2")),
                     "SECONDARY explanation did not update with the selected threshold.");
                 Wait((Task)Invoke(control, "CalculateAsync"));
@@ -1192,7 +1204,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Invoke(control, "ReversePath");
                 Assert(threshold.Value == 1.25m, "Reverse did not retain a custom nonzero SECONDARY distance.");
                 AssertSecondaryForThreshold(Field<RouteResult>(control, "result"), 1.25);
-                Assert(!debounce.Enabled && pause.Checked, "Manual threshold calculations or Reverse enabled the paused timer.");
+                AssertManualMode(control);
             }
             AssertAppearance(before, true, true);
         });

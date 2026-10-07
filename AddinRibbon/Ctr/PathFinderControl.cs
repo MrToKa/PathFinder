@@ -25,7 +25,6 @@ namespace AddinRibbon.Ctr
         private readonly NumericUpDown gap = new NumericUpDown { Minimum = 0.01m, Maximum = 1.30m, DecimalPlaces = 2, Increment = 0.05m, Value = 0.25m, Width = 120 };
         private readonly NumericUpDown secondaryDistance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 0.05m, Value = 2m, Width = 120 };
         private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
-        private readonly CheckBox pause = new CheckBox { Text = "Pause automatic calculation", Checked = true, AutoSize = true };
         private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = true };
         private readonly ToolTip approachHint = new ToolTip();
         private readonly TextBox output = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false };
@@ -37,7 +36,6 @@ namespace AddinRibbon.Ctr
         private readonly Button reverse = MakeButton("Reverse");
         private readonly Button restore = MakeButton("Restore view");
         private readonly Button cancel = MakeButton("Cancel");
-        private readonly System.Windows.Forms.Timer debounce = new System.Windows.Forms.Timer { Interval = 700 };
         private CancellationTokenSource operation;
         private ModelItem pickedFrom, pickedTo, resolvedFrom, resolvedTo;
         private RouteResult result;
@@ -70,8 +68,6 @@ namespace AddinRibbon.Ctr
             verticalApproach.CheckedChanged += InputChanged;
             approachHint.SetToolTip(verticalApproach, "Prefer the least horizontal offset among approaches no more than Connection gap farther than the shortest 3D approach.");
             approachHint.SetToolTip(gap, "Maximum empty space between measured tray surfaces. Trays without validated surface evidence use approximate centreline distances and are reported for review.");
-            pause.CheckedChanged += (s, e) => { debounce.Stop(); if (!pause.Checked) ScheduleCalculation(); };
-            debounce.Tick += async (s, e) => { debounce.Stop(); if (!pause.Checked) await CalculateAsync(); };
             add.Click += async (s, e) => await AssignAsync();
             remove.Click += (s, e) => RemoveRules();
             calculate.Click += async (s, e) => await CalculateAsync();
@@ -173,7 +169,7 @@ namespace AddinRibbon.Ctr
             cableType.Items.AddRange(new object[] { "MV", "LV", "Control" }); cableType.SelectedIndex = 1;
             var options = Flow(); options.Controls.AddRange(new Control[] { LabeledOption("Cable type", cableType), LabeledOption("Connection gap (m)", gap), LabeledOption("SECONDARY distance (m)", secondaryDistance) });
             layout.Controls.Add(options, 0, 1);
-            var calculationMode = Flow(); calculationMode.Controls.AddRange(new Control[] { pause, verticalApproach });
+            var calculationMode = Flow(); calculationMode.Controls.Add(verticalApproach);
             layout.Controls.Add(calculationMode, 0, 2);
             var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 3);
             UpdateSecondaryExplanation();
@@ -237,7 +233,7 @@ namespace AddinRibbon.Ctr
             }
             catch (OperationCanceledException) { if (!IsDisposed) status.Text = "Route capture cancelled."; }
             catch (Exception e) { if (!IsDisposed) status.Text = e.Message; }
-            finally { FinishOperation(); if (!IsDisposed) ScheduleCalculation(); }
+            finally { FinishOperation(); }
         }
         private void Pick(bool isFrom)
         {
@@ -249,19 +245,14 @@ namespace AddinRibbon.Ctr
             string name = string.IsNullOrWhiteSpace(item.DisplayName) ? RoutingSession.SelectedUnnamedObjectLabel : item.DisplayName;
             if (isFrom) { from.Text = name; pickedFrom = item; }
             else { to.Text = name; pickedTo = item; }
-            InvalidateResult(); ScheduleCalculation();
+            InvalidateResult();
         }
         private void InputChanged(object sender, EventArgs e)
         {
             if (swapping) return;
             if (sender == from) pickedFrom = null;
             if (sender == to) pickedTo = null;
-            InvalidateResult(); ScheduleCalculation();
-        }
-        private void ScheduleCalculation()
-        {
-            debounce.Stop();
-            if (!pause.Checked && !busy && session.Assignments.Count > 0 && !string.IsNullOrWhiteSpace(from.Text) && !string.IsNullOrWhiteSpace(to.Text)) debounce.Start();
+            InvalidateResult();
         }
         private void SessionChanged(object sender, EventArgs e)
         {
@@ -274,7 +265,6 @@ namespace AddinRibbon.Ctr
             }
             InvalidateResult(); RefreshRules();
             status.Text = session.Assignments.Count == 0 ? "Model changed. Add route objects again." : "Route rules or visibility changed. Calculate the path using visible objects.";
-            ScheduleCalculation();
         }
         private void InvalidateResult()
         {
@@ -285,7 +275,7 @@ namespace AddinRibbon.Ctr
         private async Task CalculateAsync()
         {
             if (busy) return;
-            debounce.Stop(); InvalidateResult(); StartOperation("Resolving objects and reading route geometry...");
+            InvalidateResult(); StartOperation("Resolving objects and reading route geometry...");
             int revision = session.Revision;
             try
             {
@@ -370,7 +360,6 @@ namespace AddinRibbon.Ctr
             }
             finally { swapping = false; }
             if (wasShown) ShowPath();
-            else if (result == null) ScheduleCalculation();
         }
         private void StartOperation(string message)
         {
@@ -392,7 +381,7 @@ namespace AddinRibbon.Ctr
         {
             if (disposing)
             {
-                debounce.Stop(); debounce.Dispose(); approachHint.Dispose(); operation?.Cancel();
+                approachHint.Dispose(); operation?.Cancel();
                 session.Changed -= SessionChanged; session.Dispose(); RoutePathOverlay.Clear(); visualization.Dispose();
             }
             base.Dispose(disposing);
