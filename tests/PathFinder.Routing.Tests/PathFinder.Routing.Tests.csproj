@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../AddinRibbon/Routing/*.cs" Link="Routing/%(Filename)%(Extension)" />
+    <Compile Include="Program.cs" />
+    <Compile Include="GeometryTests.cs" />
+    <Compile Include="EndpointApproachTests.cs" />
+    <Compile Include="VerifiedPortTests.cs" />
+    <Compile Include="MeshClearanceTests.cs" />
+    <Compile Include="DesignLengthTests.cs" />
+  </ItemGroup>
+</Project>
