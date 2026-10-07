@@ -319,7 +319,7 @@ namespace AddinRibbon.Ctr
                 result = calculated; resolvedFrom = fromItem; resolvedTo = toItem; resultRevision = revision;
                 capturedFrom = fromPoint; capturedTo = toPoint;
                 RenderResult();
-                status.Text = result.Success ? "Path calculated. Show path applies colours and 95% transparency." : result.Message;
+                status.Text = result.Success ? "Path calculated. Show path selects and highlights the route." : result.Message;
             }
             catch (OperationCanceledException) { if (!IsDisposed) status.Text = "Calculation cancelled."; }
             catch (Exception e) { if (!IsDisposed) { output.Text = e.Message; status.Text = e.Message; } }
@@ -361,7 +361,7 @@ namespace AddinRibbon.Ctr
                 }
                 visualization.Show(session.Document, result.SegmentIds.Select(id => session.SegmentItems[id]), resolvedFrom, resolvedTo);
                 RoutePathOverlay.Show(session.Document, result.PathPoints);
-                status.Text = "Cable line: yellow. From: green. To: orange. Trays: blue. Everything else: 95% transparency.";
+                status.Text = "Path selected in Selection Tree. Cable line: yellow. From: green. To: orange.";
             }
             catch (Exception e) { RestoreView(); status.Text = e.Message; }
             UpdateButtons();

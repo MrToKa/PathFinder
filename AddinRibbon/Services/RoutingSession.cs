@@ -429,12 +429,13 @@ namespace AddinRibbon.Services
 
         private static string FindRouteName(ModelItem leaf, ModelItem root)
         {
+            var names = new List<string>();
             foreach (var item in leaf.AncestorsAndSelf)
             {
-                if (RouteCodeParser.TryParseNamedCode(item.DisplayName, out var code)) return code;
+                names.Add(item.DisplayName);
                 if (item.Equals(root)) break;
             }
-            return !string.IsNullOrWhiteSpace(root.DisplayName) ? root.DisplayName : leaf.DisplayName;
+            return RouteNameResolver.Resolve(names);
         }
         private static RoutePoint ToMeters(Point3D p, double scale) { return new RoutePoint(p.X * scale, p.Y * scale, p.Z * scale); }
         private void RequireDocument()
