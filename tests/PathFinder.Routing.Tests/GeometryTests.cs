@@ -15,6 +15,14 @@ internal static class GeometryTests
         run("Ambiguous ports and unequal radii retain the fallback with diagnostics", UnsupportedFits);
         run("A small physical gap remains a gap after bend reconstruction", PhysicalGap);
         run("Only named elbows are fitted; axis fallback and cancellation are preserved", FallbackAndCancellation);
+        run("Rotated three-dimensional straight meshes preserve physical ports and length", RotatedStraightMesh);
+        run("An ambiguous short spool needs compatible neighboring physical ports", ShortSpoolMesh);
+        run("Mesh straight fitting preserves small gaps and cable permissions", StraightMeshGapAndCategories);
+        run("Circular mesh bends retain measured ports, tangent stubs and arbitrary turn angles", CircularMeshBends);
+        run("A wide vertical bend and protruding cap hardware retain physical geometry", WideVerticalBendAndHardware);
+        run("Circular mesh fitting preserves strict gaps and requires compatible neighboring arms", CircularMeshGapAndEvidence);
+        run("Excessive repeated cap pairs cannot validate an incomplete straight candidate set", StraightCandidateLimit);
+        run("Unproved centerlines can retain exact raw mesh clearance with a length diagnostic", RawSurfaceFallback);
     }
 
     private static void PlanesAndTurns()
@@ -148,6 +156,7 @@ internal static class GeometryTests
         Assert(result.Segments[0].Points.Count == 2, "The existing straight fallback must remain available.");
         Assert(!TrayGeometryBuilder.IsBendOrElbow("BENDING support"), "A substring must not classify a bend.");
         Assert(TrayGeometryBuilder.IsBendOrElbow("ELBOW 1") && TrayGeometryBuilder.IsBendOrElbow("BEND 2"), "Known shape tokens must be accepted.");
+        Assert(TrayGeometryBuilder.IsBendOrElbow("/BEND_30_1_of_PIPE_X") && TrayGeometryBuilder.IsStraight("/FTUBE_1"), "Underscores delimit semantic shape tokens.");
         using (var cancellation = new CancellationTokenSource())
         {
             cancellation.Cancel();
@@ -155,6 +164,263 @@ internal static class GeometryTests
             catch (OperationCanceledException) { return; }
             throw new InvalidOperationException("Cancelled geometry work must stop.");
         }
+    }
+
+    private static void RotatedStraightMesh()
+    {
+        var first = new RoutePoint(0, 0, 0);
+        var direction = new TrayMeshGeometry.Vec(1, 2, 3).Unit;
+        var last = (new TrayMeshGeometry.Vec(first) + direction * 5).Point;
+        var input = MeshInput("mesh-straight", "/B001", "FTUBE_1", RailMesh(first, last, 0.64, 0.1));
+        var built = TrayGeometryBuilder.Build(new[] { input });
+        Assert(built.ValidatedStraights == 1 && built.FallbackStraights == 0, "A uniquely elongated mesh must validate the extrusion direction.");
+        var line = built.Segments[0];
+        Near(5, Length(line.Points), 0.000001, "A rotated world box must not shorten the real straight.");
+        Near(0, Math.Min(line.Points[0].DistanceTo(first), line.Points[1].DistanceTo(first)), 0.000001, "First mesh port must stay at the physical end.");
+        Near(0, Math.Min(line.Points[0].DistanceTo(last), line.Points[1].DistanceTo(last)), 0.000001, "Last mesh port must stay at the physical end.");
+        Assert(line.AllowedCategories == (CableCategory.LV | CableCategory.Control), "Detached geometry must retain permissions.");
+    }
+
+    private static void ShortSpoolMesh()
+    {
+        var spool = MeshInput("spool", "/B002", "FTUBE_2", RailMesh(new RoutePoint(3, 0, 0), new RoutePoint(3.238, 0, 0), 0.64, 0.1));
+        var isolated = TrayGeometryBuilder.Build(new[] { spool });
+        Assert(isolated.ValidatedStraights == 0 && isolated.FallbackStraights == 1, "The short spool's matching height planes must not be mistaken for its axis.");
+        Assert(isolated.Diagnostics.Count > 0, "An unresolved mesh ambiguity must be reported.");
+        var arm = MeshInput("arm", "/B001", "FTUBE_1", RailMesh(new RoutePoint(0, 0, 0), new RoutePoint(3, 0, 0), 0.64, 0.1));
+        var built = TrayGeometryBuilder.Build(new[] { spool, arm });
+        Assert(built.ValidatedStraights == 2 && built.FallbackStraights == 0, "Matching opposed ports of a proven arm must resolve the short spool.");
+        Near(0.238, Length(built.Segments[0].Points), 0.000001, "A spool wider than its length must retain the measured extrusion length.");
+        var route = new RouteCalculator().Calculate(built.Segments, new RoutePoint(0, 0, 0), new RoutePoint(3.238, 0, 0), CableCategory.LV,
+            new RoutingOptions { ConnectionToleranceMeters = 0.00001, PreferVerticalApproach = false });
+        Assert(route.Success && route.RouteText == "/B001/B002", "The mesh-resolved spool must join its actual arm.");
+        Near(3.238, route.LengthMeters, 0.000001, "Physical cable length must include the complete short spool.");
+    }
+
+    private static void StraightMeshGapAndCategories()
+    {
+        var arm = MeshInput("arm", "/B001", "FTUBE", RailMesh(new RoutePoint(0, 0, 0), new RoutePoint(3, 0, 0), 0.64, 0.1));
+        var spool = MeshInput("spool", "/B002", "FTUBE", RailMesh(new RoutePoint(3.015, 0, 0), new RoutePoint(3.253, 0, 0), 0.64, 0.1));
+        var built = TrayGeometryBuilder.Build(new[] { arm, spool });
+        Assert(built.ValidatedStraights == 2, "A nearby matching physical port may validate a spool.");
+        Near(0.015, built.Segments[0].Points.Min(p => built.Segments[1].Points.Min(q => p.DistanceTo(q))), 0.000001, "Geometry fitting must preserve a real gap.");
+        var route = new RouteCalculator().Calculate(built.Segments, new RoutePoint(0, 0, 0), new RoutePoint(3.253, 0, 0), CableCategory.LV,
+            new RoutingOptions { ConnectionToleranceMeters = 0.005, PreferVerticalApproach = false });
+        Assert(!route.Success, "Mesh fitting must not bridge a gap beyond the configured limit.");
+        var controlArm = new TrayGeometryInput(arm.Id, arm.RouteName, CableCategory.Control, arm.ShapeName, arm.Minimum, arm.Maximum, null, arm.Mesh);
+        var lvSpool = new TrayGeometryInput(spool.Id, spool.RouteName, CableCategory.LV, spool.ShapeName, spool.Minimum, spool.Maximum, null, spool.Mesh);
+        built = TrayGeometryBuilder.Build(new[] { controlArm, lvSpool });
+        Assert(built.ValidatedStraights == 1 && built.FallbackStraights == 1, "A forbidden-category arm cannot resolve an ambiguous spool.");
+    }
+
+    private static void StraightCandidateLimit()
+    {
+        var fragments = Enumerable.Range(0, 11).SelectMany(index => RailMesh(
+            new RoutePoint(index * 0.04, 0, 0), new RoutePoint(index * 0.04 + 0.02, 0, 0), 0.64, 0.1).Fragments);
+        var input = MeshInput("repeated-caps", "/B001", "FTUBE", new TrayMeshData(fragments));
+        var built = TrayGeometryBuilder.Build(new[] { input });
+        Assert(built.ValidatedStraights == 0 && built.FallbackStraights == 1,
+            "Stopping at a cap-pair limit must not turn an incomplete set into a unique accepted fit.");
+        Assert(built.Diagnostics.Any(message => message.Contains("too many measured cap pairs")),
+            "The rejected complexity limit must be reported explicitly.");
+    }
+
+    private static void RawSurfaceFallback()
+    {
+        var mesh = RailMesh(new RoutePoint(0, 0, 0), new RoutePoint(3, 0, 0), 0.64, 0.1);
+        var unknown = MeshInput("unknown", "/B001", "unidentified tray geometry", mesh);
+        var built = TrayGeometryBuilder.Build(new[] { unknown });
+        Assert(built.ValidatedStraights == 0 && built.ValidatedBends == 0 && built.FallbackClearances == 0,
+            "An unclassified shape may retain actual triangle clearance without claiming a proven centerline.");
+        Assert(built.Segments[0].VerifiedPorts.Count == 0 && built.Segments[0].ConnectionSurfaces.Count == 1,
+            "The raw surface must not invent measured end sections.");
+        Assert(built.Diagnostics.Any(message => message.Contains("no validated tray centerline")),
+            "Exact surface clearance must not conceal approximate cable length.");
+        var unsupportedBend = MeshInput("unsupported", "/B002", "BEND", mesh);
+        built = TrayGeometryBuilder.Build(new[] { unsupportedBend });
+        Assert(built.FallbackBends == 1 && built.FallbackClearances == 0 && built.Segments[0].ConnectionSurfaces.Count == 1,
+            "An unproved bend may retain the original surface without fitting a fictitious curve.");
+        var noMesh = Input("absent", "/B003", "unidentified tray geometry", unknown.Minimum, unknown.Maximum);
+        built = TrayGeometryBuilder.Build(new[] { noMesh });
+        Assert(built.FallbackClearances == 1 && built.Segments[0].ConnectionSurfaces.Count == 0,
+            "Missing actual triangles must expose centerline-clearance fallback.");
+    }
+
+    private static TrayGeometryInput MeshInput(string id, string route, string shape, TrayMeshData mesh)
+    {
+        var vertices = mesh.Fragments.SelectMany(f => f.Vertices).ToArray();
+        return new TrayGeometryInput(id, route, CableCategory.LV | CableCategory.Control, shape,
+            new RoutePoint(vertices.Min(p => p.X), vertices.Min(p => p.Y), vertices.Min(p => p.Z)),
+            new RoutePoint(vertices.Max(p => p.X), vertices.Max(p => p.Y), vertices.Max(p => p.Z)), null, mesh);
+    }
+
+    private static void CircularMeshBends()
+    {
+        foreach (double degrees in new[] { 30.0, 90.0 })
+        {
+            var fixture = CircularMeshFixture(degrees, false, false);
+            var built = TrayGeometryBuilder.Build(fixture.Inputs);
+            Assert(built.ValidatedBends == 1 && built.ValidatedStraights == 2, "The circular surfaces and compatible cap sections must validate all three pieces: " + string.Join("; ", built.Diagnostics));
+            var bend = built.Segments[0];
+            Assert(bend.ConnectionsAtEndsOnly && bend.VerifiedPorts.Count == 2, "A measured bend must expose only its proven physical end sections.");
+            Near(0, bend.Points.Min(p => p.DistanceTo(fixture.Start)), 0.000001, "The first cap stays at its own measured coordinate.");
+            Near(0, bend.Points.Min(p => p.DistanceTo(fixture.End)), 0.000001, "The final cap stays at its own measured coordinate.");
+            double radians = degrees * Math.PI / 180;
+            Near(0.2 + radians, Length(bend.Points), 0.001, "The curve must retain both unequal tangent stubs and the circular arc.");
+            var route = new RouteCalculator().Calculate(built.Segments, fixture.From, fixture.To, CableCategory.Control,
+                new RoutingOptions { ConnectionToleranceMeters = 0.25, PreferVerticalApproach = false });
+            Assert(route.Success && route.RouteText == "/B001/B002/B003", "Only the measured circular corridor can connect the three pieces.");
+            Near(6.2 + radians, route.LengthMeters, 0.001, "Connection tolerance must not cut across internal arc samples.");
+            Assert(route.ConnectionGapCount == 0 && route.ConnectionGapLengthMeters == 0, "Matching proven physical ports must remain continuous.");
+            foreach (var point in bend.Points)
+                Assert(route.PathPoints.Any(p => p.DistanceTo(point) < 0.000001), "The complete curve and both stubs must remain in the selected path.");
+        }
+    }
+
+    private static void WideVerticalBendAndHardware()
+    {
+        var fixture = CircularMeshFixture(30, true, true);
+        var built = TrayGeometryBuilder.Build(fixture.Inputs);
+        Assert(built.ValidatedBends == 1 && built.ValidatedStraights == 2, "A wide vertical turn and a cap inside a hardware envelope need actual mesh evidence: " + string.Join("; ", built.Diagnostics));
+        var bend = built.Segments[0];
+        Near(0.2 + Math.PI / 6, Length(bend.Points), 0.001, "Extrusion width must not replace the bend plane.");
+        Near(0, bend.Points.Min(p => p.DistanceTo(fixture.Start)), 0.000001, "Hardware must not move the first cap to the world-box extreme.");
+        Near(0, bend.Points.Min(p => p.DistanceTo(fixture.End)), 0.000001, "Hardware must not move the final cap.");
+    }
+
+    private static void CircularMeshGapAndEvidence()
+    {
+        var fixture = CircularMeshFixture(30, false, false);
+        var incoming = fixture.Inputs[1];
+        var direction = (new TrayMeshGeometry.Vec(fixture.Start) - new TrayMeshGeometry.Vec(fixture.From)).Unit;
+        var shifted = MeshInput("in", "/B001", "FTUBE", RailMesh(fixture.From,
+            (new TrayMeshGeometry.Vec(fixture.Start) - direction * 0.015).Point, 0.64, 0.1));
+        var built = TrayGeometryBuilder.Build(new[] { fixture.Inputs[0], shifted, fixture.Inputs[2] });
+        Assert(built.ValidatedBends == 1, "A compatible near arm may validate the bend without supplying its port position.");
+        Near(0, built.Segments[0].Points.Min(p => p.DistanceTo(fixture.Start)), 0.000001, "The physical cap must not snap across a gap.");
+        var route = new RouteCalculator().Calculate(built.Segments, fixture.From, fixture.To, CableCategory.Control,
+            new RoutingOptions { ConnectionToleranceMeters = 0.005, PreferVerticalApproach = false });
+        Assert(!route.Success, "A fifteen-millimetre physical gap must fail a five-millimetre limit.");
+        route = new RouteCalculator().Calculate(built.Segments, fixture.From, fixture.To, CableCategory.Control,
+            new RoutingOptions { ConnectionToleranceMeters = 0.02, PreferVerticalApproach = false });
+        Assert(route.Success && route.ConnectionGapCount == 1, "A permitted real gap must remain counted.");
+        Near(0.015, route.ConnectionGapLengthMeters, 0.000001, "Measured ports cannot hide real gap length.");
+        var missing = TrayGeometryBuilder.Build(new[] { fixture.Inputs[0], fixture.Inputs[1] });
+        Assert(missing.ValidatedBends == 0 && missing.FallbackBends == 1, "One neighboring arm cannot prove both physical ports.");
+        var incompatible = new TrayGeometryInput(incoming.Id, incoming.RouteName, CableCategory.MV, incoming.ShapeName,
+            incoming.Minimum, incoming.Maximum, null, incoming.Mesh);
+        var forbidden = TrayGeometryBuilder.Build(new[] { fixture.Inputs[0], incompatible, fixture.Inputs[2] });
+        Assert(forbidden.ValidatedBends == 0, "Disjoint permissions cannot provide connectivity evidence.");
+    }
+
+    private static Fixture CircularMeshFixture(double degrees, bool vertical, bool hardware)
+    {
+        double sweep = degrees * Math.PI / 180;
+        var start = new TrayMeshGeometry.Vec(1, -0.08, 0);
+        var incoming = new TrayMeshGeometry.Vec(0, 1, 0);
+        var radialEnd = new TrayMeshGeometry.Vec(Math.Cos(sweep), Math.Sin(sweep), 0);
+        var outgoing = new TrayMeshGeometry.Vec(-Math.Sin(sweep), Math.Cos(sweep), 0);
+        var end = radialEnd + outgoing * 0.12;
+        Func<TrayMeshGeometry.Vec, TrayMeshGeometry.Vec> transform = p => vertical
+            ? new TrayMeshGeometry.Vec(10 + p.X, 20 + p.Z, 30 + p.Y)
+            : new TrayMeshGeometry.Vec(10 + p.X, 20 + p.Y, 30 + p.Z);
+        var mesh = SweptRailMesh(sweep, transform);
+        if (hardware)
+        {
+            // An unrelated support extends behind the complete physical cap;
+            // it must affect bounds without supplying a new compatible opening.
+            var support = TransformMesh(RailMesh((start - incoming * 0.15).Point,
+                (start - incoming * 0.1).Point, 0.04, 0.025), transform);
+            mesh = new TrayMeshData(mesh.Fragments.Concat(support.Fragments));
+        }
+        return new Fixture
+        {
+            Start = transform(start).Point, End = transform(end).Point,
+            From = transform(start - incoming * 3).Point, To = transform(end + outgoing * 3).Point,
+            Inputs = new[] {
+                MeshInput("bend", "/B002", "BEND_" + degrees, mesh),
+                MeshInput("in", "/B001", "FTUBE", TransformMesh(RailMesh((start - incoming * 3).Point, start.Point, 0.64, 0.1), transform)),
+                MeshInput("out", "/B003", "FTUBE", TransformMesh(RailMesh(end.Point, (end + outgoing * 3).Point, 0.64, 0.1), transform)) }
+        };
+    }
+
+    private static TrayMeshData TransformMesh(TrayMeshData mesh, Func<TrayMeshGeometry.Vec, TrayMeshGeometry.Vec> transform)
+    {
+        return new TrayMeshData(mesh.Fragments.Select(f => new TrayMeshFragment(
+            f.Vertices.Select(p => transform(new TrayMeshGeometry.Vec(p)).Point), f.TriangleIndices)));
+    }
+
+    private static TrayMeshData SweptRailMesh(double sweep, Func<TrayMeshGeometry.Vec, TrayMeshGeometry.Vec> transform)
+    {
+        var centers = new List<TrayMeshGeometry.Vec> { new TrayMeshGeometry.Vec(1, -0.08, 0) };
+        var across = new List<TrayMeshGeometry.Vec> { new TrayMeshGeometry.Vec(1, 0, 0) };
+        int steps = (int)Math.Round(sweep / (Math.PI / 36));
+        for (int step = 0; step <= steps; step++)
+        {
+            double angle = sweep * step / steps;
+            var radial = new TrayMeshGeometry.Vec(Math.Cos(angle), Math.Sin(angle), 0);
+            centers.Add(radial); across.Add(radial);
+        }
+        var endRadial = across[across.Count - 1];
+        centers.Add(endRadial + new TrayMeshGeometry.Vec(-Math.Sin(sweep), Math.Cos(sweep), 0) * 0.12);
+        across.Add(endRadial);
+        const double width = 0.64, rail = 0.022, height = 0.1, bevel = 0.005;
+        double half = rail * 0.5, h = height * 0.5;
+        var profile = new[] { new[] { -half, -h + bevel }, new[] { -half + bevel, -h },
+            new[] { half - bevel, -h }, new[] { half, -h + bevel }, new[] { half, h - bevel },
+            new[] { half - bevel, h }, new[] { -half + bevel, h }, new[] { -half, h - bevel } };
+        var fragments = new List<TrayMeshFragment>();
+        foreach (int side in new[] { -1, 1 })
+        {
+            var vertices = new List<RoutePoint>(); var triangles = new List<int>();
+            for (int row = 0; row < centers.Count; row++)
+                foreach (var point in profile)
+                    vertices.Add(transform(centers[row] + across[row] * (side * (width - rail) * 0.5 + point[0])
+                        + new TrayMeshGeometry.Vec(0, 0, point[1])).Point);
+            int last = (centers.Count - 1) * 8;
+            for (int i = 1; i < 7; i++) { triangles.AddRange(new[] { 0, i, i + 1, last, last + i + 1, last + i }); }
+            for (int row = 0; row < centers.Count - 1; row++)
+                for (int i = 0; i < 8; i++)
+                {
+                    int first = row * 8 + i, next = row * 8 + (i + 1) % 8;
+                    triangles.AddRange(new[] { first, next, next + 8, first, next + 8, first + 8 });
+                }
+            fragments.Add(new TrayMeshFragment(vertices, triangles));
+        }
+        return new TrayMeshData(fragments);
+    }
+
+    // Two bevelled longitudinal rails give genuinely ambiguous matching height
+    // caps. Only neighboring physical-port evidence identifies a short spool.
+    private static TrayMeshData RailMesh(RoutePoint start, RoutePoint end, double width, double height)
+    {
+        var origin = new TrayMeshGeometry.Vec(start);
+        var direction = (new TrayMeshGeometry.Vec(end) - origin).Unit;
+        double length = start.DistanceTo(end);
+        var up = Math.Abs(direction.Z) < 0.9 ? new TrayMeshGeometry.Vec(0, 0, 1) : new TrayMeshGeometry.Vec(0, 1, 0);
+        up = (up - direction * TrayMeshGeometry.Vec.Dot(up, direction)).Unit;
+        var across = TrayMeshGeometry.Vec.Cross(up, direction).Unit;
+        const double rail = 0.022, bevel = 0.005;
+        double half = rail * 0.5, h = height * 0.5;
+        var profile = new[] { new[] { -half, -h + bevel }, new[] { -half + bevel, -h },
+            new[] { half - bevel, -h }, new[] { half, -h + bevel }, new[] { half, h - bevel },
+            new[] { half - bevel, h }, new[] { -half + bevel, h }, new[] { -half, h - bevel } };
+        var fragments = new List<TrayMeshFragment>();
+        foreach (int side in new[] { -1, 1 })
+        {
+            var vertices = new List<RoutePoint>(); var triangles = new List<int>();
+            for (int port = 0; port < 2; port++)
+                foreach (var point in profile)
+                    vertices.Add((origin + direction * (port * length) + across * (side * (width - rail) * 0.5 + point[0]) + up * point[1]).Point);
+            for (int i = 1; i < 7; i++) { triangles.AddRange(new[] { 0, i, i + 1 }); triangles.AddRange(new[] { 8, 8 + i + 1, 8 + i }); }
+            for (int i = 0; i < 8; i++)
+            {
+                int next = (i + 1) % 8;
+                triangles.AddRange(new[] { i, next, 8 + next, i, 8 + next, 8 + i });
+            }
+            fragments.Add(new TrayMeshFragment(vertices, triangles));
+        }
+        return new TrayMeshData(fragments);
     }
 
     private sealed class Fixture

@@ -444,6 +444,51 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(Wait(session.CaptureSegmentsAsync(CancellationToken.None)).Count == original.Count, "Unhiding children of an added route parent did not restore the network.");
             }
         });
+        Check("warm_geometry_fit_reuses_unchanged_inputs_and_rebuilds_for_live_category_and_visibility", () =>
+        {
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                var selected = leaves.Where(EffectivelyVisible).Take(3).ToArray();
+                Assert(selected.Length == 3, "Sample has fewer than three visible route leaves.");
+                document.CurrentSelection.CopyFrom(selected);
+                Wait(session.AssignSelectionAsync(CableCategory.LV, CancellationToken.None));
+                var first = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                int firstBuilds = session.GeometryBuildCount;
+                Assert(first.Count == 3 && firstBuilds == 1, "Initial detached geometry was not built once.");
+                var warm = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(session.GeometryBuildCount == firstBuilds, "Unchanged warm capture refitted the same geometry.");
+                Assert(first.Zip(warm, (a, b) => a.Id == b.Id && a.AllowedCategories == b.AllowedCategories
+                    && a.Points.SequenceEqual(b.Points) && a.ConnectionsAtEndsOnly == b.ConnectionsAtEndsOnly).All(value => value),
+                    "Warm capture changed detached geometry or categories.");
+                Assert(session.AreCapturedSegmentsCurrent(), "Warm capture discarded the live geometry fingerprints.");
+
+                int revision = session.Revision;
+                session.Assignments[0].Categories = CableCategory.Control;
+                var recategorized = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(session.Revision == revision, "Direct category fixture unexpectedly called NotifyChanged.");
+                Assert(session.GeometryBuildCount == firstBuilds + 1, "A changed live category reused an obsolete fit.");
+                Assert(recategorized.Single(segment => session.SegmentItems[segment.Id].Equals(selected[0])).AllowedCategories == CableCategory.Control,
+                    "Recapture did not apply the changed live category.");
+                Assert(recategorized.Where(segment => !session.SegmentItems[segment.Id].Equals(selected[0]))
+                    .All(segment => segment.AllowedCategories == CableCategory.LV), "Category change affected other route assignments.");
+                Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(session.GeometryBuildCount == firstBuilds + 1, "Recategorized geometry was refitted on its unchanged warm capture.");
+
+                document.Models.SetHidden(new[] { selected[0] }, true);
+                System.Windows.Forms.Application.DoEvents();
+                Assert(!session.AreCapturedSegmentsCurrent(), "Hiding a fitted leaf preserved a stale current snapshot.");
+                var visible = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(visible.Count == 2 && session.GeometryBuildCount == firstBuilds + 2, "Hide did not rebuild the visible detached network.");
+                document.Models.SetHidden(new[] { selected[0] }, false);
+                System.Windows.Forms.Application.DoEvents();
+                var restored = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(restored.Count == 3 && session.GeometryBuildCount == firstBuilds + 3, "Unhide did not rebuild the restored network.");
+                Assert(session.AreCapturedSegmentsCurrent(), "Restored network has stale fingerprints.");
+                Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(session.GeometryBuildCount == firstBuilds + 3, "Restored unchanged network refitted during warm capture.");
+            }
+        });
         Check("visible_parent_base_point_excludes_hidden_lower_geometry", () =>
         {
             using (var hidden = new HiddenSnapshot(document, all))
@@ -663,6 +708,25 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(!Field<bool>(control, "busy") && threshold.Enabled, "SECONDARY distance was not restored after finishing the operation.");
             }
         });
+        Check("vertical_equipment_approach_defaults_on_and_is_locked_while_busy", () =>
+        {
+            Assert(!new RoutingOptions().PreferVerticalApproach, "The library default changed the existing shortest-3D attachment contract.");
+            using (var control = new PathFinderControl())
+            {
+                var approach = Field<CheckBox>(control, "verticalApproach");
+                Assert(approach.Checked && approach.Enabled && !approach.ThreeState,
+                    "The UI approach option is not an enabled two-state checkbox checked by default.");
+                approach.Checked = false;
+                Assert(!approach.Checked && Field<CheckBox>(control, "pause").Checked, "Selecting shortest-3D approach changed Pause.");
+                try
+                {
+                    Invoke(control, "StartOperation", "Testing approach state during capture.");
+                    Assert(Field<bool>(control, "busy") && !approach.Enabled, "Approach preference can change while an operation is busy.");
+                }
+                finally { Invoke(control, "FinishOperation"); }
+                Assert(approach.Enabled && !approach.Checked, "Finishing an operation lost the selected approach preference.");
+            }
+        });
         Check("connection_gap_metrics_render_and_reverse_preserve_totals", () =>
         {
             var calculated = new RouteCalculator().Calculate(new[]
@@ -801,8 +865,10 @@ public sealed class PathFinderSmoke : AddInPlugin
         {
             tabs.SelectedIndex = index; control.PerformLayout(); System.Windows.Forms.Application.DoEvents();
             var page = tabs.SelectedTab;
+            page.AutoScrollPosition = System.Drawing.Point.Empty;
             var layout = page.Controls.OfType<TableLayoutPanel>().Single();
-            Assert(layout.Width >= page.ClientSize.Width - 8, "Selected tab layout did not expand across the native pane.");
+            int availableWidth = page.ClientSize.Width - (page.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0);
+            Assert(layout.Width >= availableWidth - 8, "Selected tab layout did not expand across the native pane.");
             if (index == 0)
             {
                 var grid = ControlsOf(page).OfType<DataGridView>().Single();
@@ -825,10 +891,17 @@ public sealed class PathFinderSmoke : AddInPlugin
                     Assert(page.ClientRectangle.Contains(BoundsRelativeTo(label, page)), "Path numeric option label is clipped after resize.");
                     Assert(BoundsRelativeTo(label.Parent, page).Contains(BoundsRelativeTo(option, page)), "Numeric option escaped its label group.");
                 }
+                Assert(page.ClientRectangle.Contains(BoundsRelativeTo(Field<CheckBox>(control, "verticalApproach"), page)),
+                    "The equipment-approach checkbox is clipped after native pane resize.");
                 var pathOutput = Field<TextBox>(control, "output");
                 Assert(pathOutput.Height > 30, "Path output collapsed after native pane resize: output=" + pathOutput.Size
                     + ", control=" + control.ClientSize + ", page=" + page.ClientSize + ", layout=" + layout.Size
                     + ", row heights=" + string.Join(",", layout.GetRowHeights()) + ".");
+                page.ScrollControlIntoView(pathOutput);
+                System.Windows.Forms.Application.DoEvents();
+                Assert(page.ClientRectangle.IntersectsWith(BoundsRelativeTo(pathOutput, page)),
+                    "The result remains inaccessible after scrolling the narrow pane.");
+                page.AutoScrollPosition = System.Drawing.Point.Empty;
             }
         }
     }
@@ -854,6 +927,110 @@ public sealed class PathFinderSmoke : AddInPlugin
 
     private void TestControlFlow(List<ModelItem> leaves)
     {
+        Check("vertical_approach_toggle_passes_both_modes_to_manual_calculation_and_reverse_renderer", () =>
+        {
+            var before = Snapshot(geometry);
+            var modifiedItems = new List<ModelItem>();
+            var originalBounds = new List<BoundingBox3D>();
+            try
+            {
+                using (var control = new PathFinderControl())
+                {
+                    var session = Field<RoutingSession>(control, "session");
+                    // Discover two real native leaves whose detached geometry is a
+                    // nondegenerate line. Translate/rotate only this disposable
+                    // smoke model so the two attachment modes must choose different
+                    // contacts; unchanged sample geometry cannot prove option wiring.
+                    document.CurrentSelection.CopyFrom(leaves.Where(RoutingSession.IsVisibleEndpoint).Take(32));
+                    Wait((Task)Invoke(control, "AssignAsync"));
+                    var initial = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                    var pair = initial.Where(segment => segment.Points.Count == 2 && segment.Points[0].DistanceTo(segment.Points[1]) > 0.02
+                        && !session.SegmentItems[segment.Id].AncestorsAndSelf.Any(item => Regex.IsMatch(item.DisplayName ?? "", @"\b(?:BEND|ELBOW)\b", RegexOptions.IgnoreCase)))
+                        .Take(2).ToArray();
+                    Assert(pair.Length == 2, "Smoke sample needs two real nondegenerate line leaves for the approach fixture.");
+                    var nearTray = session.SegmentItems[pair[0].Id]; var verticalTray = session.SegmentItems[pair[1].Id];
+                    var endpoints = leaves.Where(item => !item.Equals(nearTray) && !item.Equals(verticalTray) && RoutingSession.IsVisibleEndpoint(item)).Take(2).ToArray();
+                    Assert(endpoints.Length == 2, "Smoke sample needs two separate endpoint leaves for the approach fixture.");
+                    modifiedItems.AddRange(new[] { nearTray, verticalTray, endpoints[0], endpoints[1] });
+                    foreach (var item in modifiedItems) originalBounds.Add(item.BoundingBox());
+                    session.Assignments.Clear(); session.NotifyChanged();
+                    document.CurrentSelection.CopyFrom(new[] { nearTray, verticalTray }); Wait((Task)Invoke(control, "AssignAsync"));
+                    var selected = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                    foreach (var segment in selected) RotateSmokeLineToXAxis(session.SegmentItems[segment.Id], segment);
+                    selected = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                    foreach (var segment in selected)
+                    {
+                        var centre = Midpoint(segment.Points.First(), segment.Points.Last());
+                        var target = session.SegmentItems[segment.Id].Equals(nearTray) ? new RoutePoint(0, 0.10, 0) : new RoutePoint(0, 0, 0.20);
+                        TranslateSmokeItemInMeters(session.SegmentItems[segment.Id], centre, target);
+                    }
+                    selected = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                    double commonHalfLength = selected.Min(segment => segment.Points.First().DistanceTo(segment.Points.Last())) * 0.5;
+                    var expectedFrom = new RoutePoint(0, 0, 0); var expectedTo = new RoutePoint(commonHalfLength * 0.25, 0, 0.20);
+                    TranslateSmokeItemInMeters(endpoints[0], NativeBasePointInMeters(endpoints[0]), expectedFrom);
+                    TranslateSmokeItemInMeters(endpoints[1], NativeBasePointInMeters(endpoints[1]), expectedTo);
+                    document.CurrentSelection.CopyFrom(new[] { endpoints[0] }); Invoke(control, "Pick", true);
+                    document.CurrentSelection.CopyFrom(new[] { endpoints[1] }); Invoke(control, "Pick", false);
+                    var approach = Field<CheckBox>(control, "verticalApproach"); var pause = Field<CheckBox>(control, "pause");
+                    var timer = Field<System.Windows.Forms.Timer>(control, "debounce");
+                    Field<NumericUpDown>(control, "gap").Value = 0.25m;
+                    var nearest = new RouteCalculator().Calculate(selected, expectedFrom, expectedTo, CableCategory.LV,
+                        new RoutingOptions { ConnectionToleranceMeters = 0.25, PreferVerticalApproach = false });
+                    var vertical = new RouteCalculator().Calculate(selected, expectedFrom, expectedTo, CableCategory.LV,
+                        new RoutingOptions { ConnectionToleranceMeters = 0.25, PreferVerticalApproach = true });
+                    Assert(nearest.Success && vertical.Success, "The two native fixture trays are not connected at the selected gap.");
+                    Assert(Math.Abs(nearest.FromDistanceMeters - vertical.FromDistanceMeters) > 0.05
+                        && nearest.PathPoints[1].DistanceTo(vertical.PathPoints[1]) > 0.05,
+                        "The native fixture does not distinguish nearest-3D and vertical attachment modes.");
+                    AssertNear(nearest.FromDistanceMeters, 0.10); AssertNear(vertical.FromDistanceMeters, 0.20);
+                    AssertPoint(vertical.PathPoints[1], new RoutePoint(0, 0, 0.20));
+                    foreach (bool preferVertical in new[] { true, false })
+                    {
+                        approach.Checked = preferVertical;
+                        Assert(pause.Checked && !timer.Enabled, "Changing approach preference enabled automatic calculation while paused.");
+                        Wait((Task)Invoke(control, "CalculateAsync"));
+                        var actual = Field<RouteResult>(control, "result"); var expected = preferVertical ? vertical : nearest;
+                        AssertUiBasePoints(control, actual, expectedFrom, expectedTo);
+                        AssertNear(actual.FromDistanceMeters, expected.FromDistanceMeters); AssertNear(actual.ToDistanceMeters, expected.ToDistanceMeters);
+                        AssertNear(actual.LengthMeters, expected.LengthMeters); AssertPoint(actual.PathPoints[1], expected.PathPoints[1]);
+                        Assert(actual.ConnectionGapCount == expected.ConnectionGapCount, "Manual calculation ignored the selected approach mode's graph contacts.");
+                        Invoke(control, "ShowPath"); AssertOverlayPoints(actual.PathPoints);
+                        Invoke(control, "ReversePath");
+                        var reversed = Field<RouteResult>(control, "result");
+                        AssertUiBasePoints(control, reversed, expectedTo, expectedFrom);
+                        AssertOverlayPoints(actual.PathPoints.Reverse().ToArray());
+                        AssertPoint(reversed.PathPoints[reversed.PathPoints.Count - 2], expected.PathPoints[1]);
+                        AssertNear(reversed.ToDistanceMeters, actual.FromDistanceMeters);
+                        Assert(approach.Checked == preferVertical, "Reverse changed the selected approach mode.");
+                        Invoke(control, "ReversePath");
+                        AssertUiBasePoints(control, Field<RouteResult>(control, "result"), expectedFrom, expectedTo);
+                        // Flip the selected option while a result and overlay exist.
+                        approach.Checked = !preferVertical;
+                        Assert(Field<RouteResult>(control, "result") == null && !Field<Button>(control, "show").Enabled,
+                            "Changing approach mode retained a stale calculation.");
+                        Assert(!Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
+                            "Changing approach mode retained the previous rendered attachments.");
+                        Assert(pause.Checked && !timer.Enabled && Field<Button>(control, "calculate").Enabled,
+                            "Paused approach edit started automatic work or disabled manual Calculate.");
+                    }
+                    pause.Checked = false; approach.Checked = !approach.Checked;
+                    Assert(timer.Enabled && !Field<bool>(control, "busy"), "Unpaused approach edit did not schedule the normal debounced calculation.");
+                    pause.Checked = true;
+                    Assert(!timer.Enabled, "Re-enabling Pause did not stop the pending approach calculation.");
+                }
+            }
+            finally
+            {
+                RoutePathOverlay.Clear();
+                for (int index = 0; index < modifiedItems.Count; index++)
+                {
+                    document.Models.ResetPermanentTransform(new[] { modifiedItems[index] });
+                    using (var restored = modifiedItems[index].BoundingBox()) AssertBounds(restored, originalBounds[index]);
+                    originalBounds[index].Dispose();
+                }
+            }
+            AssertAppearance(before, true, true);
+        });
         Check("manual_ui_handlers_assign_pick_calculate_show_reverse_restore", () =>
         {
             var before = Snapshot(geometry);
@@ -1050,6 +1227,25 @@ public sealed class PathFinderSmoke : AddInPlugin
 
     private static T Field<T>(object target, string name)
     { return (T)target.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(target); }
+
+    private void RotateSmokeLineToXAxis(ModelItem item, TraySegment segment)
+    {
+        var first = segment.Points.First(); var last = segment.Points.Last();
+        using (var source = new UnitVector3D(last.X - first.X, last.Y - first.Y, last.Z - first.Z))
+        using (var target = new UnitVector3D(1, 0, 0))
+        using (var rotation = new Rotation3D(source, target))
+        using (var transform = new Transform3D(rotation))
+            document.Models.OverridePermanentTransform(new[] { item }, transform, true);
+    }
+    private void TranslateSmokeItemInMeters(ModelItem item, RoutePoint before, RoutePoint after)
+    {
+        double scale = UnitConversion.ScaleFactor(Units.Meters, document.Units);
+        using (var offset = new Vector3D((after.X - before.X) * scale, (after.Y - before.Y) * scale, (after.Z - before.Z) * scale))
+        using (var transform = Transform3D.CreateTranslation(offset))
+            document.Models.OverridePermanentTransform(new[] { item }, transform, true);
+    }
+    private static RoutePoint Midpoint(RoutePoint first, RoutePoint last)
+    { return new RoutePoint((first.X + last.X) * 0.5, (first.Y + last.Y) * 0.5, (first.Z + last.Z) * 0.5); }
 
     private RoutePoint NativeBasePointInMeters(ModelItem item)
     {

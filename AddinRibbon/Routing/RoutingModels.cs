@@ -50,6 +50,28 @@ namespace AddinRibbon.Routing
         }
     }
 
+    /// <summary>Measured physical end section of a mesh-validated tray, in world-space metres.</summary>
+    public sealed class RouteConnectionPort
+    {
+        public RoutePoint Point { get; private set; }
+        public RoutePoint Outward { get; private set; }
+        public RoutePoint U { get; private set; }
+        public RoutePoint V { get; private set; }
+        public double Width { get; private set; }
+        public double Height { get; private set; }
+        public RouteConnectionPort(RoutePoint point, RoutePoint outward, RoutePoint u, RoutePoint v, double width, double height)
+        {
+            if (!RoutePoint.IsFinite(width) || !RoutePoint.IsFinite(height) || width <= 0 || height <= 0)
+                throw new ArgumentException("Measured port section dimensions must be finite and positive.");
+            if (Math.Abs(Dot(outward, outward) - 1) > 1e-6 || Math.Abs(Dot(u, u) - 1) > 1e-6
+                || Math.Abs(Dot(v, v) - 1) > 1e-6 || Math.Abs(Dot(outward, u)) > 1e-6
+                || Math.Abs(Dot(outward, v)) > 1e-6 || Math.Abs(Dot(u, v)) > 1e-6)
+                throw new ArgumentException("Measured port directions must form an orthonormal frame.");
+            Point = point; Outward = outward; U = u; V = v; Width = width; Height = height;
+        }
+        internal static double Dot(RoutePoint a, RoutePoint b) { return a.X * b.X + a.Y * b.Y + a.Z * b.Z; }
+    }
+
     public sealed class TraySegment
     {
         public string Id { get; private set; }
@@ -59,12 +81,24 @@ namespace AddinRibbon.Routing
         public IReadOnlyList<RoutePoint> Points { get; private set; }
         /// <summary>Cross-tray connections use only the physical first/last ports; object projection may use the interior.</summary>
         public bool ConnectionsAtEndsOnly { get; private set; }
+        public IReadOnlyList<RouteConnectionPort> VerifiedPorts { get; private set; }
+        /// <summary>Measured mesh surfaces: one clipped straight body or two bend end sections.</summary>
+        public IReadOnlyList<TrayMeshClearance> ConnectionSurfaces { get; private set; }
 
         public TraySegment(string id, string name, CableCategory allowedCategories,
             IEnumerable<RoutePoint> points) : this(id, name, allowedCategories, points, false) { }
 
         public TraySegment(string id, string name, CableCategory allowedCategories,
             IEnumerable<RoutePoint> points, bool connectionsAtEndsOnly = false)
+            : this(id, name, allowedCategories, points, connectionsAtEndsOnly, null) { }
+
+        public TraySegment(string id, string name, CableCategory allowedCategories,
+            IEnumerable<RoutePoint> points, bool connectionsAtEndsOnly, IEnumerable<RouteConnectionPort> verifiedPorts)
+            : this(id, name, allowedCategories, points, connectionsAtEndsOnly, verifiedPorts, null) { }
+
+        public TraySegment(string id, string name, CableCategory allowedCategories,
+            IEnumerable<RoutePoint> points, bool connectionsAtEndsOnly, IEnumerable<RouteConnectionPort> verifiedPorts,
+            IEnumerable<TrayMeshClearance> connectionSurfaces)
         {
             if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("A tray needs a stable identifier.", "id");
             if (points == null) throw new ArgumentNullException("points");
@@ -78,6 +112,15 @@ namespace AddinRibbon.Routing
             AllowedCategories = allowedCategories;
             Points = new ReadOnlyCollection<RoutePoint>(copy);
             ConnectionsAtEndsOnly = connectionsAtEndsOnly;
+            var ports = (verifiedPorts ?? Enumerable.Empty<RouteConnectionPort>()).ToArray();
+            if (ports.Length > 2 || ports.Any(p => p == null ||
+                (p.Point.DistanceTo(copy[0]) > 1e-6 && p.Point.DistanceTo(copy[copy.Length - 1]) > 1e-6)))
+                throw new ArgumentException("Verified ports must describe the physical first and/or last endpoint.", "verifiedPorts");
+            VerifiedPorts = new ReadOnlyCollection<RouteConnectionPort>(ports);
+            var surfaces = (connectionSurfaces ?? Enumerable.Empty<TrayMeshClearance>()).ToArray();
+            if (surfaces.Any(s => s == null) || (surfaces.Length != 0 && surfaces.Length != (connectionsAtEndsOnly ? 2 : 1)))
+                throw new ArgumentException("Connection surfaces must describe one straight body or both bend end sections.", "connectionSurfaces");
+            ConnectionSurfaces = new ReadOnlyCollection<TrayMeshClearance>(surfaces);
         }
     }
 
@@ -86,6 +129,8 @@ namespace AddinRibbon.Routing
         public double ConnectionToleranceMeters { get; set; } = 0.25;
         public double SampleSpacingMeters { get; set; } = 0.125;
         public double SecondaryDistanceMeters { get; set; } = 2.0;
+        /// <summary>Prefer the least horizontal offset among approaches within one connection tolerance of the nearest 3D approach.</summary>
+        public bool PreferVerticalApproach { get; set; }
         public int MaxGraphNodes { get; set; } = 500000;
         public int MaxGraphConnections { get; set; } = 2000000;
 
@@ -118,7 +163,7 @@ namespace AddinRibbon.Routing
         public bool ToRequiresSecondary { get; private set; }
         /// <summary>Cross-tray gaps greater than RouteCalculator.ConnectionGapEpsilonMeters; excludes equipment attachment legs.</summary>
         public int ConnectionGapCount { get; private set; }
-        /// <summary>Sum of the qualifying cross-tray gaps, already included in LengthMeters.</summary>
+        /// <summary>Sum of measured surface clearances, or centreline distances where mesh evidence is unavailable. Cable length retains full centreline connectors.</summary>
         public double ConnectionGapLengthMeters { get; private set; }
 
         internal RouteResult(bool success, string message, IEnumerable<string> codes,

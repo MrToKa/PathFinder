@@ -26,6 +26,8 @@ namespace AddinRibbon.Ctr
         private readonly NumericUpDown secondaryDistance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 0.05m, Value = 2m, Width = 120 };
         private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
         private readonly CheckBox pause = new CheckBox { Text = "Pause automatic calculation", Checked = true, AutoSize = true };
+        private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = true };
+        private readonly ToolTip approachHint = new ToolTip();
         private readonly TextBox output = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false };
         private readonly Label status = new Label { Dock = DockStyle.Bottom, AutoSize = false, Height = 45, Padding = new Padding(6), Text = "Manual mode. Add routes, then enter From and To." };
         private readonly Button add = MakeButton("Add / update selection");
@@ -65,6 +67,9 @@ namespace AddinRibbon.Ctr
             cableType.SelectedIndexChanged += InputChanged;
             gap.ValueChanged += InputChanged;
             secondaryDistance.ValueChanged += SecondaryDistanceChanged;
+            verticalApproach.CheckedChanged += InputChanged;
+            approachHint.SetToolTip(verticalApproach, "Prefer the least horizontal offset among approaches no more than Connection gap farther than the shortest 3D approach.");
+            approachHint.SetToolTip(gap, "Maximum empty space between measured tray surfaces. Trays without validated surface evidence use approximate centreline distances and are reported for review.");
             pause.CheckedChanged += (s, e) => { debounce.Stop(); if (!pause.Checked) ScheduleCalculation(); };
             debounce.Tick += async (s, e) => { debounce.Stop(); if (!pause.Checked) await CalculateAsync(); };
             add.Click += async (s, e) => await AssignAsync();
@@ -137,6 +142,27 @@ namespace AddinRibbon.Ctr
         private void BuildPathTab()
         {
             var page = new TabPage("Path"); var layout = CreateLayout(6);
+            page.AutoScroll = true;
+            layout.Dock = DockStyle.Top;
+            output.MinimumSize = new Size(0, 120);
+            bool sizingPath = false;
+            Action sizePath = () =>
+            {
+                if (sizingPath || page.IsDisposed || page.Disposing || layout.IsDisposed || layout.Disposing) return;
+                sizingPath = true;
+                try
+                {
+                    // Wrapped options must never consume the result row. On a
+                    // small/high-font pane, let the tab scroll its complete form.
+                    int headerHeight = layout.GetRowHeights().Take(5).Sum() + layout.Padding.Vertical;
+                    int minimumHeight = headerHeight + output.MinimumSize.Height + output.Margin.Vertical;
+                    layout.MinimumSize = new Size(0, minimumHeight);
+                    layout.Height = Math.Max(page.ClientSize.Height, minimumHeight);
+                }
+                finally { sizingPath = false; }
+            };
+            layout.Layout += (s, e) => sizePath();
+            page.SizeChanged += (s, e) => sizePath();
             var endpoints = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, AutoSize = true };
             endpoints.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize)); endpoints.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); endpoints.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             var useFrom = MakeButton("Use selection"); var useTo = MakeButton("Use selection");
@@ -147,7 +173,8 @@ namespace AddinRibbon.Ctr
             cableType.Items.AddRange(new object[] { "MV", "LV", "Control" }); cableType.SelectedIndex = 1;
             var options = Flow(); options.Controls.AddRange(new Control[] { LabeledOption("Cable type", cableType), LabeledOption("Connection gap (m)", gap), LabeledOption("SECONDARY distance (m)", secondaryDistance) });
             layout.Controls.Add(options, 0, 1);
-            layout.Controls.Add(pause, 0, 2);
+            var calculationMode = Flow(); calculationMode.Controls.AddRange(new Control[] { pause, verticalApproach });
+            layout.Controls.Add(calculationMode, 0, 2);
             var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 3);
             UpdateSecondaryExplanation();
             layout.Controls.Add(secondaryExplanation, 0, 4);
@@ -157,7 +184,7 @@ namespace AddinRibbon.Ctr
         private void UpdateSecondaryExplanation()
         {
             secondaryExplanation.Text = "SECONDARY: base point is farther than " + secondaryDistance.Value.ToString("F2")
-                + " m from an allowed route centreline. Lengths are approximate.";
+                + " m from the selected route approach. Lengths are approximate.";
         }
 
         private void SecondaryDistanceChanged(object sender, EventArgs e)
@@ -268,7 +295,8 @@ namespace AddinRibbon.Ctr
                 var trays = await session.CaptureSegmentsAsync(token);
                 var fromPoint = session.BasePointInMeters(fromItem); var toPoint = session.BasePointInMeters(toItem);
                 var category = (CableCategory)Enum.Parse(typeof(CableCategory), (string)cableType.SelectedItem);
-                var options = new RoutingOptions { ConnectionToleranceMeters = (double)gap.Value, SecondaryDistanceMeters = (double)secondaryDistance.Value };
+                var options = new RoutingOptions { ConnectionToleranceMeters = (double)gap.Value, SecondaryDistanceMeters = (double)secondaryDistance.Value,
+                    PreferVerticalApproach = verticalApproach.Checked };
                 status.Text = "Calculating path through " + trays.Count + " geometry leaves...";
                 var calculated = await Task.Run(() => new RouteCalculator().Calculate(trays, fromPoint, toPoint, category, options, token), token);
                 token.ThrowIfCancellationRequested();
@@ -292,8 +320,13 @@ namespace AddinRibbon.Ctr
                     + "Connection gaps: " + result.ConnectionGapCount + Environment.NewLine
                     + "Connection gap length: " + result.ConnectionGapLengthMeters.ToString("F3") + " m" + Environment.NewLine
                     + "Geometry leaves used: " + result.SegmentIds.Distinct().Count()
-                    + (session.FallbackBends > 0 ? Environment.NewLine + "Geometry review: " + session.FallbackBends + " bend(s) in the selected network use a straight approximation." : "")
+                    + (session.FallbackBends > 0 || session.FallbackStraights > 0 ? Environment.NewLine
+                        + "Geometry review: " + session.FallbackBends + " bend(s) and " + session.FallbackStraights
+                        + " straight(s) in the selected network use a bounding-box approximation." : "")
+                    + (session.FallbackClearances > 0 ? Environment.NewLine + "Connection gap review: "
+                        + session.FallbackClearances + " tray(s) in the selected network use approximate centreline gaps." : "")
                 : result.Message;
+            if (output.Parent?.Parent is ScrollableControl page) page.ScrollControlIntoView(output);
         }
         private void ShowPath()
         {
@@ -351,7 +384,7 @@ namespace AddinRibbon.Ctr
         private void UpdateButtons()
         {
             add.Enabled = remove.Enabled = calculate.Enabled = reverse.Enabled = !busy;
-            from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = secondaryDistance.Enabled = rules.Enabled = !busy;
+            from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = secondaryDistance.Enabled = verticalApproach.Enabled = rules.Enabled = !busy;
             cancel.Enabled = busy; show.Enabled = !busy && result != null && result.Success;
             restore.Enabled = !busy && visualization.IsShown;
         }
@@ -359,7 +392,7 @@ namespace AddinRibbon.Ctr
         {
             if (disposing)
             {
-                debounce.Stop(); debounce.Dispose(); operation?.Cancel();
+                debounce.Stop(); debounce.Dispose(); approachHint.Dispose(); operation?.Cancel();
                 session.Changed -= SessionChanged; session.Dispose(); RoutePathOverlay.Clear(); visualization.Dispose();
             }
             base.Dispose(disposing);

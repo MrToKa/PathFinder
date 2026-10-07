@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Numerics;
 using System.Threading;
 
 namespace AddinRibbon.Routing
@@ -18,6 +19,10 @@ namespace AddinRibbon.Routing
         /// for route preference. Its actual length still contributes to cable length.
         /// </summary>
         public const double ConnectionGapEpsilonMeters = 0.000001;
+        /// <summary>Native mesh precision accepted only at two verified opposing physical ports.</summary>
+        public const double VerifiedPortContactPrecisionMeters = 0.0005;
+        /// <summary>Additive integer units keep gap preference transitive while ignoring sub-micrometre mesh noise.</summary>
+        public const double GapRankingResolutionMeters = 0.000001;
 
         public RouteResult Calculate(IEnumerable<TraySegment> trays, RoutePoint from, RoutePoint to,
             CableCategory category, RoutingOptions options = null,
@@ -34,6 +39,7 @@ namespace AddinRibbon.Routing
             double secondaryDistance = options.SecondaryDistanceMeters;
             int maxNodes = options.MaxGraphNodes;
             int maxConnections = options.MaxGraphConnections;
+            bool preferVertical = options.PreferVerticalApproach;
             var eligible = new List<TraySegment>();
             var identifiers = new HashSet<string>(StringComparer.Ordinal);
             foreach (var tray in trays)
@@ -52,6 +58,11 @@ namespace AddinRibbon.Routing
             Projection last = FindNearest(eligible, to, cancellationToken);
             if (!RoutePoint.IsFinite(first.Distance) || !RoutePoint.IsFinite(last.Distance))
                 return RouteResult.Failure("The endpoint distances are outside the supported coordinate range.");
+            if (preferVertical)
+            {
+                first = FindVerticalApproach(eligible, from, first, tolerance, cancellationToken);
+                last = FindVerticalApproach(eligible, to, last, tolerance, cancellationToken);
+            }
             var nodes = new List<Node>();
             var pieces = new List<Piece>();
             var segmentNodes = new List<List<int>>();
@@ -74,15 +85,15 @@ namespace AddinRibbon.Routing
                     if (!RoutePoint.IsFinite(length))
                         return RouteResult.Failure("The selected tray geometry contains a length outside the supported coordinate range.");
                     if (length > 0) pieces.Add(new Piece(segmentIndex, start, end, along, length,
-                        tray.ConnectionsAtEndsOnly, pieces.Count == pieceOffset));
+                        tray.ConnectionsAtEndsOnly, pieces.Count == pieceOffset, tray.VerifiedPorts, tray.ConnectionSurfaces));
                     vertices.Add(new Vertex(along, start));
                     along += length;
                 }
                 if (pieces.Count == pieceOffset)
                     pieces.Add(new Piece(segmentIndex, tray.Points[0], tray.Points[0], 0, 0,
-                        tray.ConnectionsAtEndsOnly, true));
+                        tray.ConnectionsAtEndsOnly, true, tray.VerifiedPorts, tray.ConnectionSurfaces));
                 var lastPiece = pieces[pieces.Count - 1];
-                lastPiece.HasEndPort = true;
+                lastPiece.SetEndPort();
                 pieces[pieces.Count - 1] = lastPiece;
                 vertices.Add(new Vertex(along, tray.Points[tray.Points.Count - 1]));
                 if (first.Segment == segmentIndex) vertices.Add(new Vertex(first.Along, first.Point));
@@ -117,7 +128,7 @@ namespace AddinRibbon.Routing
             PathCost graphCost;
             var path = ShortestPath(nodes, firstNode, lastNode, cancellationToken, out graphCost);
             if (path == null)
-                return RouteResult.Failure("Nearest From tray " + eligible[first.Segment].RouteCode +
+                return RouteResult.Failure("Selected From tray " + eligible[first.Segment].RouteCode +
                     " (" + first.Distance.ToString("0.###", CultureInfo.InvariantCulture) + " m from object) and To tray " +
                     eligible[last.Segment].RouteCode + " (" + last.Distance.ToString("0.###", CultureInfo.InvariantCulture) +
                     " m from object) are disconnected at " + tolerance.ToString("0.###", CultureInfo.InvariantCulture) +
@@ -206,26 +217,77 @@ namespace AddinRibbon.Routing
             return best;
         }
 
-        private static void Connect(List<Node> nodes, int first, int last, double length, bool isCrossTray = false)
+        private static Projection FindVerticalApproach(List<TraySegment> trays, RoutePoint target,
+            Projection nearest, double tolerance, CancellationToken token)
         {
-            int gapCount = isCrossTray && length > ConnectionGapEpsilonMeters ? 1 : 0;
-            nodes[first].Edges.Add(new Edge(last, length, gapCount));
-            nodes[last].Edges.Add(new Edge(first, length, gapCount));
+            // Keep the nearest 3D approach as a safe fallback. A horizontal match
+            // on another storey cannot win unless its complete approach is nearby.
+            double limit = nearest.Distance + tolerance;
+            if (!RoutePoint.IsFinite(limit)) limit = double.MaxValue;
+            var best = nearest;
+            double bestHorizontal = HorizontalDistance(nearest.Point, target);
+            for (int trayIndex = 0; trayIndex < trays.Count; trayIndex++)
+            {
+                token.ThrowIfCancellationRequested();
+                double along = 0;
+                var points = trays[trayIndex].Points;
+                for (int part = 0; part < points.Count - 1; part++)
+                {
+                    if ((part & 255) == 0) token.ThrowIfCancellationRequested();
+                    var a = points[part]; var b = points[part + 1];
+                    double x = b.X - a.X, y = b.Y - a.Y, z = b.Z - a.Z;
+                    double squaredHorizontal = x * x + y * y;
+                    double length = a.DistanceTo(b);
+                    // A vertical piece has constant XY: its nearest height wins.
+                    double fraction = squaredHorizontal == 0
+                        ? (z == 0 ? 0 : Clamp((target.Z - a.Z) / z))
+                        : Clamp(((target.X - a.X) * x + (target.Y - a.Y) * y) / squaredHorizontal);
+                    var point = RoutePoint.Interpolate(a, b, fraction);
+                    double distance = point.DistanceTo(target);
+                    double horizontal = HorizontalDistance(point, target);
+                    if (RoutePoint.IsFinite(distance) && distance <= limit
+                        && (horizontal < bestHorizontal || (horizontal == bestHorizontal && distance < best.Distance)))
+                    {
+                        best = new Projection { Segment = trayIndex, Part = part, Along = along + length * fraction,
+                            Point = point, Distance = distance };
+                        bestHorizontal = horizontal;
+                    }
+                    along += length;
+                }
+            }
+            return best;
+        }
+
+        private static double HorizontalDistance(RoutePoint first, RoutePoint last)
+        {
+            double x = first.X - last.X, y = first.Y - last.Y;
+            return Math.Sqrt(x * x + y * y);
+        }
+
+        private static void Connect(List<Node> nodes, int first, int last, double length, bool isCrossTray = false,
+            double gapDistance = -1)
+        {
+            if (gapDistance < 0) gapDistance = length;
+            int gapCount = isCrossTray && gapDistance > ConnectionGapEpsilonMeters ? 1 : 0;
+            nodes[first].Edges.Add(new Edge(last, length, gapCount, gapCount == 0 ? 0 : gapDistance));
+            nodes[last].Edges.Add(new Edge(first, length, gapCount, gapCount == 0 ? 0 : gapDistance));
         }
 
         private static bool AddNeighbourConnections(List<Node> nodes, List<Piece> pieces,
             List<List<int>> segmentNodes, double tolerance, int maxNodes, int maxConnections,
             CancellationToken token, out GraphLimit limit)
         {
-            var graph = new ContactGraph(nodes, segmentNodes, maxNodes, maxConnections);
+            var graph = new ContactGraph(nodes, segmentNodes, maxNodes, maxConnections, token);
             if (graph.Limit != GraphLimit.None) { limit = graph.Limit; return false; }
-            var indices = Enumerable.Range(0, pieces.Count).ToArray();
+            var indices = Enumerable.Range(0, pieces.Count)
+                .Where(i => !pieces[i].EndsOnly || pieces[i].HasStartPort || pieces[i].HasEndPort).ToArray();
             var tree = BuildAabbTree(pieces, indices, 0, indices.Length, token);
             long candidates = 0;
             int treeVisits = 0;
             for (int index = 0; index < pieces.Count; index++)
             {
                 if ((index & 127) == 0) token.ThrowIfCancellationRequested();
+                if (pieces[index].EndsOnly && !pieces[index].HasStartPort && !pieces[index].HasEndPort) continue;
                 if (!VisitCandidates(tree, indices, pieces, index, tolerance, graph,
                     token, ref candidates, CandidateLimit(maxConnections), ref treeVisits))
                 {
@@ -297,10 +359,12 @@ namespace AddinRibbon.Routing
                     out firstFraction, out lastFraction, out highFirst, out highLast);
                 if (!overlap) ClosestPoints(first, last, out firstFraction, out lastFraction);
                 if (!graph.AddContact(first, last, firstFraction, lastFraction, tolerance)) return false;
-                // Parallel overlap has infinitely many closest contacts. Its two
-                // boundaries preserve travel without forcing a detour to one end.
+                // Keep both overlap boundaries and equipment attachment stations:
+                // an interior endpoint must not travel to a tray end to cross.
                 if (overlap && highFirst != firstFraction &&
                     !graph.AddContact(first, last, highFirst, highLast, tolerance)) return false;
+                if (overlap && !graph.AddParallelAttachmentContacts(first, last,
+                    firstFraction, highFirst, tolerance)) return false;
             }
             return true;
         }
@@ -392,6 +456,48 @@ namespace AddinRibbon.Routing
             return Math.Max(0, Math.Min(1, value));
         }
 
+        private static BigInteger GapUnits(double distance)
+        {
+            double units = distance / GapRankingResolutionMeters;
+            return RoutePoint.IsFinite(units) ? new BigInteger(Math.Round(units, MidpointRounding.AwayFromZero))
+                : new BigInteger(distance) * 1000000;
+        }
+
+        private static bool ProvenPortContact(Piece first, Piece last, RoutePoint firstPoint, RoutePoint lastPoint)
+        {
+            if (firstPoint.DistanceTo(lastPoint) > VerifiedPortContactPrecisionMeters) return false;
+            foreach (var a in first.VerifiedPorts)
+            {
+                if (!IsPhysicalPort(first, a, firstPoint)) continue;
+                foreach (var b in last.VerifiedPorts)
+                {
+                    if (!IsPhysicalPort(last, b, lastPoint)
+                        || a.Point.DistanceTo(b.Point) > VerifiedPortContactPrecisionMeters
+                        || RouteConnectionPort.Dot(a.Outward, b.Outward) > -1 + 0.00002) continue;
+                    // Compare measured sections in both frames, including swapped U/V axes.
+                    if (CompatibleSection(a, b) && CompatibleSection(b, a)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsPhysicalPort(Piece piece, RouteConnectionPort port, RoutePoint point)
+        {
+            return point.DistanceTo(port.Point) <= VerifiedPortContactPrecisionMeters
+                && ((piece.HasStartPort && piece.Start.DistanceTo(port.Point) <= ConnectionGapEpsilonMeters)
+                    || (piece.HasEndPort && piece.End.DistanceTo(port.Point) <= ConnectionGapEpsilonMeters));
+        }
+
+        private static bool CompatibleSection(RouteConnectionPort first, RouteConnectionPort last)
+        {
+            double width = Math.Abs(RouteConnectionPort.Dot(first.U, last.U)) * last.Width
+                + Math.Abs(RouteConnectionPort.Dot(first.U, last.V)) * last.Height;
+            double height = Math.Abs(RouteConnectionPort.Dot(first.V, last.U)) * last.Width
+                + Math.Abs(RouteConnectionPort.Dot(first.V, last.V)) * last.Height;
+            return Math.Abs(first.Width - width) <= Math.Max(VerifiedPortContactPrecisionMeters, first.Width * 0.05)
+                && Math.Abs(first.Height - height) <= Math.Max(VerifiedPortContactPrecisionMeters, first.Height * 0.05);
+        }
+
         private static List<int> ShortestPath(List<Node> nodes, int first, int last,
             CancellationToken token, out PathCost cost)
         {
@@ -449,7 +555,13 @@ namespace AddinRibbon.Routing
             internal readonly int Node;
             internal readonly int GapCount;
             internal readonly double Length;
-            internal Edge(int node, double length, int gapCount) { Node = node; Length = length; GapCount = gapCount; }
+            internal readonly double GapDistance;
+            internal readonly BigInteger GapRank;
+            internal Edge(int node, double length, int gapCount, double gapDistance)
+            {
+                Node = node; Length = length; GapCount = gapCount; GapDistance = gapDistance;
+                GapRank = GapUnits(gapDistance);
+            }
         }
 
         private struct Vertex
@@ -464,15 +576,28 @@ namespace AddinRibbon.Routing
             internal readonly int Segment;
             internal readonly RoutePoint Start, End;
             internal readonly double Along, Length;
-            internal readonly Bounds Bounds;
+            internal Bounds Bounds;
             internal readonly bool EndsOnly, HasStartPort;
+            internal readonly IReadOnlyList<RouteConnectionPort> VerifiedPorts;
+            internal readonly IReadOnlyList<TrayMeshClearance> Surfaces;
             internal bool HasEndPort;
             internal Piece(int segment, RoutePoint start, RoutePoint end, double along, double length,
-                bool endsOnly, bool hasStartPort)
+                bool endsOnly, bool hasStartPort, IReadOnlyList<RouteConnectionPort> verifiedPorts,
+                IReadOnlyList<TrayMeshClearance> surfaces)
             {
                 Segment = segment; Start = start; End = end; Along = along; Length = length;
                 Bounds = new Bounds(start, end);
                 EndsOnly = endsOnly; HasStartPort = hasStartPort; HasEndPort = false;
+                VerifiedPorts = verifiedPorts;
+                Surfaces = surfaces;
+                if (surfaces.Count != 0 && (!endsOnly || hasStartPort))
+                    Bounds = Bounds.Union(Bounds, new Bounds(surfaces[0].Minimum, surfaces[0].Maximum));
+            }
+            internal void SetEndPort()
+            {
+                HasEndPort = true;
+                if (EndsOnly && Surfaces.Count == 2)
+                    Bounds = Bounds.Union(Bounds, new Bounds(Surfaces[1].Minimum, Surfaces[1].Maximum));
             }
         }
 
@@ -491,16 +616,23 @@ namespace AddinRibbon.Routing
         {
             private readonly List<Node> nodes;
             private readonly List<List<int>> segmentNodes;
+            private readonly int[][] initialNodes;
             private readonly int maxNodes, maxConnections;
             private readonly List<Connection> crossConnections = new List<Connection>();
             private readonly HashSet<long> connectedNodes = new HashSet<long>();
             private int connections;
+            private readonly CancellationToken token;
+            private readonly Dictionary<Tuple<TrayMeshClearance, TrayMeshClearance>, TrayMeshClearanceResult> queriedSurfaces
+                = new Dictionary<Tuple<TrayMeshClearance, TrayMeshClearance>, TrayMeshClearanceResult>();
             internal GraphLimit Limit { get; private set; }
 
-            internal ContactGraph(List<Node> nodes, List<List<int>> segmentNodes, int maxNodes, int maxConnections)
+            internal ContactGraph(List<Node> nodes, List<List<int>> segmentNodes, int maxNodes, int maxConnections,
+                CancellationToken token)
             {
                 this.nodes = nodes; this.segmentNodes = segmentNodes;
+                initialNodes = segmentNodes.Select(ordered => ordered.ToArray()).ToArray();
                 this.maxNodes = maxNodes; this.maxConnections = maxConnections;
+                this.token = token;
                 foreach (var ordered in segmentNodes) connections += ordered.Count - 1;
                 if (connections > maxConnections) Limit = GraphLimit.Connections;
             }
@@ -510,7 +642,77 @@ namespace AddinRibbon.Routing
                 var firstPoint = RoutePoint.Interpolate(first.Start, first.End, firstFraction);
                 var lastPoint = RoutePoint.Interpolate(last.Start, last.End, lastFraction);
                 double distance = firstPoint.DistanceTo(lastPoint);
-                if (distance > tolerance) return true;
+                bool provenContact = ProvenPortContact(first, last, firstPoint, lastPoint);
+                if (provenContact) return Link(first, last, firstFraction, lastFraction, 0, tolerance);
+                var firstSurface = Surface(first, firstFraction);
+                var lastSurface = Surface(last, lastFraction);
+                if (firstSurface != null && lastSurface != null)
+                {
+                    TrayMeshClearanceResult clearance;
+                    var surfaceKey = Tuple.Create(firstSurface, lastSurface);
+                    bool alreadyQueried = queriedSurfaces.TryGetValue(surfaceKey, out clearance);
+                    if (!alreadyQueried)
+                    {
+                        firstSurface.TryDistanceTo(lastSurface, tolerance, token, out clearance);
+                        queriedSurfaces.Add(surfaceKey, clearance);
+                    }
+                    if (clearance == null) return true;
+                    // Surface minima can share a gap rank while projecting to
+                    // different centreline stations. Retain the canonical tied
+                    // witnesses so cable length chooses between them consistently.
+                    if (!alreadyQueried)
+                        foreach (var contact in clearance.Contacts)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            double a = first.EndsOnly ? firstFraction : ProjectionFraction(first, contact.FirstPoint);
+                            double b = last.EndsOnly ? lastFraction : ProjectionFraction(last, contact.SecondPoint);
+                            if (!Link(first, last, a, b, contact.DistanceMeters, tolerance)) return false;
+                        }
+                    // Preserve analytical overlap/attachment contacts only when
+                    // their measured local sections tie the actual surface minimum.
+                    TrayMeshClearanceResult local = null;
+                    var matching = clearance.Contacts.FirstOrDefault(contact =>
+                        WitnessMatches(first, firstPoint, contact.FirstPoint)
+                        && WitnessMatches(last, lastPoint, contact.SecondPoint));
+                    bool localTie = matching != null || (first.VerifiedPorts.Count != 0 && last.VerifiedPorts.Count != 0
+                        && firstSurface.TryDistanceAtSections(lastSurface, Station(first, firstPoint),
+                            Station(last, lastPoint), tolerance, token, out local)
+                        && GapUnits(local.DistanceMeters) == GapUnits(clearance.DistanceMeters));
+                    return !localTie || Link(first, last, firstFraction, lastFraction,
+                        local != null ? local.DistanceMeters : matching.DistanceMeters, tolerance);
+                }
+                return Link(first, last, firstFraction, lastFraction, distance, tolerance);
+            }
+
+            internal bool AddParallelAttachmentContacts(Piece first, Piece last,
+                double lowFirst, double highFirst, double tolerance)
+            {
+                foreach (int index in initialNodes[first.Segment])
+                {
+                    token.ThrowIfCancellationRequested();
+                    double fraction = first.Length == 0 ? 0 : (nodes[index].Along - first.Along) / first.Length;
+                    if (fraction <= lowFirst || fraction >= highFirst) continue;
+                    if (!AddContact(first, last, fraction, ProjectionFraction(last, nodes[index].Point), tolerance)) return false;
+                }
+                foreach (int index in initialNodes[last.Segment])
+                {
+                    token.ThrowIfCancellationRequested();
+                    double lastFraction = last.Length == 0 ? 0 : (nodes[index].Along - last.Along) / last.Length;
+                    if (lastFraction < 0 || lastFraction > 1) continue;
+                    double fraction = ProjectionFraction(first, nodes[index].Point);
+                    if (fraction <= lowFirst || fraction >= highFirst) continue;
+                    if (!AddContact(first, last, fraction, lastFraction, tolerance)) return false;
+                }
+                return true;
+            }
+
+            private bool Link(Piece first, Piece last, double firstFraction, double lastFraction,
+                double gapDistance, double tolerance)
+            {
+                if (gapDistance > tolerance) return true;
+                var firstPoint = RoutePoint.Interpolate(first.Start, first.End, firstFraction);
+                var lastPoint = RoutePoint.Interpolate(last.Start, last.End, lastFraction);
+                double distance = firstPoint.DistanceTo(lastPoint);
                 int firstNode = Insert(first, firstPoint, firstFraction);
                 if (firstNode < 0) return false;
                 int lastNode = Insert(last, lastPoint, lastFraction);
@@ -518,9 +720,33 @@ namespace AddinRibbon.Routing
                 long key = ((long)Math.Min(firstNode, lastNode) << 32) | (uint)Math.Max(firstNode, lastNode);
                 if (!connectedNodes.Add(key)) return true;
                 if (connections >= maxConnections) { Limit = GraphLimit.Connections; return false; }
-                crossConnections.Add(new Connection(firstNode, lastNode, distance));
+                crossConnections.Add(new Connection(firstNode, lastNode, distance, gapDistance));
                 connections++;
                 return true;
+            }
+
+            private static TrayMeshClearance Surface(Piece piece, double fraction)
+            {
+                if (piece.Surfaces.Count == 0) return null;
+                if (!piece.EndsOnly) return piece.Surfaces[0];
+                if (fraction == 0 && piece.HasStartPort) return piece.Surfaces[0];
+                if (fraction == 1 && piece.HasEndPort) return piece.Surfaces[1];
+                return null;
+            }
+
+            private static RouteConnectionPort Station(Piece piece, RoutePoint point)
+            {
+                var port = piece.VerifiedPorts[0];
+                if (piece.EndsOnly && piece.VerifiedPorts.Count == 2
+                    && point.DistanceTo(piece.VerifiedPorts[1].Point) < point.DistanceTo(port.Point))
+                    port = piece.VerifiedPorts[1];
+                return new RouteConnectionPort(point, port.Outward, port.U, port.V, port.Width, port.Height);
+            }
+
+            private static bool WitnessMatches(Piece piece, RoutePoint analytical, RoutePoint witness)
+            {
+                return piece.EndsOnly || RoutePoint.Interpolate(piece.Start, piece.End,
+                    ProjectionFraction(piece, witness)).DistanceTo(analytical) <= ConnectionGapEpsilonMeters;
             }
 
             private int Insert(Piece piece, RoutePoint point, double fraction)
@@ -558,7 +784,8 @@ namespace AddinRibbon.Routing
                 foreach (var connection in crossConnections)
                 {
                     if ((++built & 255) == 0) token.ThrowIfCancellationRequested();
-                    Connect(nodes, connection.First, connection.Last, connection.Length, isCrossTray: true);
+                    Connect(nodes, connection.First, connection.Last, connection.Length, isCrossTray: true,
+                        gapDistance: connection.GapDistance);
                 }
                 token.ThrowIfCancellationRequested();
             }
@@ -568,7 +795,9 @@ namespace AddinRibbon.Routing
         {
             internal readonly int First, Last;
             internal readonly double Length;
-            internal Connection(int first, int last, double length) { First = first; Last = last; Length = length; }
+            internal readonly double GapDistance;
+            internal Connection(int first, int last, double length, double gapDistance)
+            { First = first; Last = last; Length = length; GapDistance = gapDistance; }
         }
 
         private struct Bounds
@@ -637,18 +866,21 @@ namespace AddinRibbon.Routing
             internal static readonly PathCost Unreachable = new PathCost(int.MaxValue, double.PositiveInfinity, double.PositiveInfinity);
             internal readonly int GapCount;
             internal readonly double GapLength, PhysicalLength;
+            internal readonly BigInteger GapRank;
             internal PathCost(int gapCount, double gapLength, double physicalLength)
-            { GapCount = gapCount; GapLength = gapLength; PhysicalLength = physicalLength; }
+                : this(gapCount, gapLength, physicalLength, BigInteger.Zero) { }
+            private PathCost(int gapCount, double gapLength, double physicalLength, BigInteger gapRank)
+            { GapCount = gapCount; GapLength = gapLength; PhysicalLength = physicalLength; GapRank = gapRank; }
             internal PathCost Add(Edge edge)
             {
                 return new PathCost(GapCount + edge.GapCount,
-                    GapLength + (edge.GapCount == 0 ? 0 : edge.Length), PhysicalLength + edge.Length);
+                    GapLength + edge.GapDistance, PhysicalLength + edge.Length, GapRank + edge.GapRank);
             }
             public int CompareTo(PathCost other)
             {
                 int count = GapCount.CompareTo(other.GapCount);
                 if (count != 0) return count;
-                int gaps = GapLength.CompareTo(other.GapLength);
+                int gaps = GapRank.CompareTo(other.GapRank);
                 return gaps != 0 ? gaps : PhysicalLength.CompareTo(other.PhysicalLength);
             }
         }

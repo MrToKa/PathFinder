@@ -29,8 +29,14 @@ namespace AddinRibbon.Services
         private Document document;
         private Dictionary<string, List<ModelItem>> nameIndex;
         private readonly Dictionary<ModelItem, double[]> capturedBoxes = new Dictionary<ModelItem, double[]>();
-        private readonly Dictionary<ModelItem, BendMeshSnapshot> bendMeshes = new Dictionary<ModelItem, BendMeshSnapshot>();
-        private static readonly Regex ShapeName = new Regex(@"\b(?:BEND|ELBOW|FTUBE|TUBE|STRAIGHT)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private readonly Dictionary<ModelItem, MeshSnapshot> meshCache = new Dictionary<ModelItem, MeshSnapshot>();
+        private readonly LinkedList<ModelItem> meshRecency = new LinkedList<ModelItem>();
+        private long cachedMeshBytes;
+        private TrayGeometryInput[] fittedInputs;
+        private TrayGeometryBuildResult fittedGeometry;
+        private const int MaximumCachedMeshes = 2000;
+        private const long MaximumMeshBytes = 128L * 1024 * 1024;
+        private static readonly Regex ShapeName = new Regex(@"(?<![A-Za-z0-9])(?:BEND|ELBOW|FTUBE|TUBE|STRAIGHT)(?![A-Za-z0-9])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
         public List<RouteAssignment> Assignments { get; } = new List<RouteAssignment>();
         public Dictionary<string, ModelItem> SegmentItems { get; } = new Dictionary<string, ModelItem>();
         public Document Document { get { return document; } }
@@ -38,6 +44,10 @@ namespace AddinRibbon.Services
         public int ModelRevision { get; private set; }
         public int ValidatedBends { get; private set; }
         public int FallbackBends { get; private set; }
+        public int ValidatedStraights { get; private set; }
+        public int FallbackStraights { get; private set; }
+        public int FallbackClearances { get; private set; }
+        public int GeometryBuildCount { get; private set; }
         public IReadOnlyList<string> GeometryDiagnostics { get; private set; } = new string[0];
         public event EventHandler Changed;
 
@@ -82,14 +92,17 @@ namespace AddinRibbon.Services
             ModelRevision++;
             Assignments.Clear();
             nameIndex = null;
-            bendMeshes.Clear();
+            ClearMeshCache();
             NotifyChanged();
         }
         public void NotifyChanged()
         {
             SegmentItems.Clear();
             capturedBoxes.Clear();
+            fittedInputs = null; fittedGeometry = null;
             ValidatedBends = FallbackBends = 0;
+            ValidatedStraights = FallbackStraights = 0;
+            FallbackClearances = 0;
             GeometryDiagnostics = new string[0];
             Revision++;
             Changed?.Invoke(this, EventArgs.Empty);
@@ -222,6 +235,8 @@ namespace AddinRibbon.Services
             var inputs = new List<TrayGeometryInput>();
             var items = new Dictionary<string, ModelItem>();
             var boxes = new Dictionary<ModelItem, double[]>();
+            long capturedMeshBytes = 0;
+            bool meshBudgetAvailable = true;
             int count = 0;
             var slice = Stopwatch.StartNew();
             foreach (var pair in assigned)
@@ -240,24 +255,20 @@ namespace AddinRibbon.Services
                             var maximum = ToMeters(box.Max, scale);
                             var fingerprint = GeometryFingerprint(item, box);
                             IReadOnlyList<TrayFaceExtent> faces = null;
-                            if (TrayGeometryBuilder.IsBendOrElbow(shape))
+                            TrayMeshData mesh = null;
+                            // Every assigned visible leaf may provide physical
+                            // clearance evidence, even when its centreline shape
+                            // is unsupported. Capture remains byte/primitive bounded.
+                            var native = CaptureMesh(item, fingerprint, minimum, maximum, scale, token, meshBudgetAvailable);
+                            faces = native.Faces;
+                            if (native.Mesh != null)
                             {
-                                if (bendMeshes.TryGetValue(item, out var cached) && cached.Fingerprint.SequenceEqual(fingerprint))
-                                    faces = cached.Faces;
-                                else
-                                {
-                                    try { faces = TrayMeshReader.ReadFaces(item, minimum, maximum, scale, token); }
-                                    catch (COMException) { token.ThrowIfCancellationRequested(); faces = new TrayFaceExtent[0]; }
-                                    catch (InvalidOperationException) { token.ThrowIfCancellationRequested(); faces = new TrayFaceExtent[0]; }
-                                    catch (NotSupportedException) { token.ThrowIfCancellationRequested(); faces = new TrayFaceExtent[0]; }
-                                    // Cache only detached mesh evidence; rules and live visibility
-                                    // are still evaluated on every capture.
-                                    if (bendMeshes.Count >= 2000) bendMeshes.Clear();
-                                    bendMeshes[item] = new BendMeshSnapshot(fingerprint, faces);
-                                }
+                                if (native.Mesh.EstimatedBytes <= MaximumMeshBytes - capturedMeshBytes)
+                                { mesh = native.Mesh; capturedMeshBytes += mesh.EstimatedBytes; }
+                                else meshBudgetAvailable = false;
                             }
                             inputs.Add(new TrayGeometryInput(id, FindRouteName(item, pair.Value.Root), pair.Value.Categories,
-                                shape, minimum, maximum, faces));
+                                shape, minimum, maximum, faces, mesh));
                             items.Add(id, item);
                             boxes.Add(item, fingerprint);
                         }
@@ -266,9 +277,21 @@ namespace AddinRibbon.Services
                 if (slice.ElapsedMilliseconds >= 25) { await Task.Delay(1, token); slice.Restart(); }
                 if (revision != Revision) throw new OperationCanceledException("Model changed during geometry capture.");
             }
-            // Native capture is finished. Bend fitting uses values only, away from
+            // Native capture is finished. Geometry fitting uses values only, away from
             // the host thread, and commits atomically with the rest of the snapshot.
-            var geometry = await Task.Run(() => TrayGeometryBuilder.Build(inputs, token), token);
+            // Endpoint edits do not change the tray geometry. Reuse the detached
+            // fit only after all live bounds, transforms, visibility and rules
+            // have been read again and the complete input snapshot still matches.
+            TrayGeometryBuildResult geometry;
+            if (fittedGeometry != null && SameGeometryInputs(inputs, fittedInputs)
+                && SameGeometryFingerprints(boxes, capturedBoxes)) geometry = fittedGeometry;
+            else
+            {
+                geometry = await Task.Run(() => TrayGeometryBuilder.Build(inputs, token), token);
+                token.ThrowIfCancellationRequested();
+                if (revision != Revision) throw new OperationCanceledException("Model changed during geometry capture.");
+                fittedInputs = inputs.ToArray(); fittedGeometry = geometry; GeometryBuildCount++;
+            }
             token.ThrowIfCancellationRequested();
             if (revision != Revision) throw new OperationCanceledException("Model changed during geometry capture.");
             SegmentItems.Clear();
@@ -277,6 +300,9 @@ namespace AddinRibbon.Services
             foreach (var pair in boxes) capturedBoxes.Add(pair.Key, pair.Value);
             ValidatedBends = geometry.ValidatedBends;
             FallbackBends = geometry.FallbackBends;
+            ValidatedStraights = geometry.ValidatedStraights;
+            FallbackStraights = geometry.FallbackStraights;
+            FallbackClearances = geometry.FallbackClearances;
             GeometryDiagnostics = geometry.Diagnostics;
             return geometry.Segments.ToList();
         }
@@ -302,12 +328,93 @@ namespace AddinRibbon.Services
                 .Concat(TrayMeshReader.ActiveTransform(item)).ToArray();
         }
 
-        private sealed class BendMeshSnapshot
+        private static bool SameGeometryInputs(List<TrayGeometryInput> current, TrayGeometryInput[] prior)
+        {
+            if (prior == null || current.Count != prior.Length) return false;
+            for (int index = 0; index < current.Count; index++)
+            {
+                var a = current[index]; var b = prior[index];
+                if (a.Id != b.Id || a.RouteName != b.RouteName || a.ShapeName != b.ShapeName || a.Categories != b.Categories
+                    || !a.Minimum.Equals(b.Minimum) || !a.Maximum.Equals(b.Maximum)
+                    || !ReferenceEquals(a.Mesh, b.Mesh) || !SameFaceEvidence(a.FaceExtents, b.FaceExtents)) return false;
+            }
+            return true;
+        }
+
+        private static bool SameGeometryFingerprints(Dictionary<ModelItem, double[]> current,
+            Dictionary<ModelItem, double[]> prior)
+        {
+            if (current.Count != prior.Count) return false;
+            foreach (var pair in current)
+            {
+                double[] previous;
+                if (!prior.TryGetValue(pair.Key, out previous) || !pair.Value.SequenceEqual(previous)) return false;
+            }
+            return true;
+        }
+
+        private static bool SameFaceEvidence(IReadOnlyList<TrayFaceExtent> first, IReadOnlyList<TrayFaceExtent> last)
+        {
+            if (first.Count != last.Count) return false;
+            for (int index = 0; index < first.Count; index++)
+            {
+                var a = first[index]; var b = last[index];
+                if (a.Face != b.Face || a.SampleCount != b.SampleCount || !a.Minimum.Equals(b.Minimum) || !a.Maximum.Equals(b.Maximum)) return false;
+            }
+            return true;
+        }
+
+        private TrayMeshReader.CapturedTrayMesh CaptureMesh(ModelItem item, double[] fingerprint,
+            RoutePoint minimum, RoutePoint maximum, double scale, CancellationToken token, bool mayRead)
+        {
+            if (meshCache.TryGetValue(item, out var cached))
+            {
+                if (cached.Fingerprint.SequenceEqual(fingerprint))
+                {
+                    meshRecency.Remove(cached.Recency); meshRecency.AddLast(cached.Recency);
+                    return cached.Native;
+                }
+                RemoveCachedMesh(item, cached);
+            }
+            // The current detached capture has its own byte budget in addition to
+            // the retained LRU cache. A capped item receives the existing fallback.
+            if (!mayRead) return TrayMeshReader.CapturedTrayMesh.Empty;
+            TrayMeshReader.CapturedTrayMesh native;
+            try { native = TrayMeshReader.ReadGeometry(item, minimum, maximum, scale, token); }
+            catch (COMException) { token.ThrowIfCancellationRequested(); native = TrayMeshReader.CapturedTrayMesh.Empty; }
+            catch (InvalidOperationException) { token.ThrowIfCancellationRequested(); native = TrayMeshReader.CapturedTrayMesh.Empty; }
+            catch (NotSupportedException) { token.ThrowIfCancellationRequested(); native = TrayMeshReader.CapturedTrayMesh.Empty; }
+            token.ThrowIfCancellationRequested();
+            long bytes = 1024L + (native.Mesh == null ? 0 : native.Mesh.EstimatedBytes);
+            if (bytes <= MaximumMeshBytes)
+            {
+                while (meshCache.Count >= MaximumCachedMeshes || cachedMeshBytes > MaximumMeshBytes - bytes)
+                {
+                    var oldest = meshRecency.First.Value;
+                    RemoveCachedMesh(oldest, meshCache[oldest]);
+                }
+                var node = meshRecency.AddLast(item);
+                meshCache.Add(item, new MeshSnapshot(fingerprint, native, node, bytes));
+                cachedMeshBytes += bytes;
+            }
+            return native;
+        }
+        private void RemoveCachedMesh(ModelItem item, MeshSnapshot cached)
+        {
+            meshCache.Remove(item); meshRecency.Remove(cached.Recency); cachedMeshBytes -= cached.Bytes;
+        }
+        private void ClearMeshCache()
+        {
+            meshCache.Clear(); meshRecency.Clear(); cachedMeshBytes = 0;
+        }
+        private sealed class MeshSnapshot
         {
             public readonly double[] Fingerprint;
-            public readonly IReadOnlyList<TrayFaceExtent> Faces;
-            public BendMeshSnapshot(double[] fingerprint, IReadOnlyList<TrayFaceExtent> faces)
-            { Fingerprint = fingerprint; Faces = faces; }
+            public readonly TrayMeshReader.CapturedTrayMesh Native;
+            public readonly LinkedListNode<ModelItem> Recency;
+            public readonly long Bytes;
+            public MeshSnapshot(double[] fingerprint, TrayMeshReader.CapturedTrayMesh native, LinkedListNode<ModelItem> recency, long bytes)
+            { Fingerprint = fingerprint; Native = native; Recency = recency; Bytes = bytes; }
         }
 
         private static string FindShapeName(ModelItem leaf, ModelItem root)
@@ -338,6 +445,8 @@ namespace AddinRibbon.Services
         {
             NavisworksApp.ActiveDocumentChanged -= ActiveDocumentChanged;
             DetachDocument();
+            ClearMeshCache();
+            fittedInputs = null; fittedGeometry = null;
         }
     }
 }

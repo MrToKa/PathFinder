@@ -35,8 +35,13 @@ namespace AddinRibbon.Routing
         public RoutePoint Minimum { get; private set; }
         public RoutePoint Maximum { get; private set; }
         public IReadOnlyList<TrayFaceExtent> FaceExtents { get; private set; }
+        public TrayMeshData Mesh { get; private set; }
         public TrayGeometryInput(string id, string routeName, CableCategory categories, string shapeName,
             RoutePoint minimum, RoutePoint maximum, IEnumerable<TrayFaceExtent> faceExtents = null)
+            : this(id, routeName, categories, shapeName, minimum, maximum, faceExtents, null) { }
+
+        public TrayGeometryInput(string id, string routeName, CableCategory categories, string shapeName,
+            RoutePoint minimum, RoutePoint maximum, IEnumerable<TrayFaceExtent> faceExtents, TrayMeshData mesh)
         {
             if (string.IsNullOrWhiteSpace(id)) throw new ArgumentException("A tray needs a stable identifier.", "id");
             if ((categories & ~CableCategory.All) != 0) throw new ArgumentException("Unknown cable category.", "categories");
@@ -47,6 +52,7 @@ namespace AddinRibbon.Routing
             Id = id; RouteName = routeName ?? string.Empty; Categories = categories;
             ShapeName = shapeName ?? string.Empty; Minimum = minimum; Maximum = maximum;
             FaceExtents = new ReadOnlyCollection<TrayFaceExtent>(faces);
+            Mesh = mesh;
         }
         internal static void ValidateBounds(RoutePoint minimum, RoutePoint maximum)
         {
@@ -60,29 +66,39 @@ namespace AddinRibbon.Routing
         public IReadOnlyList<TraySegment> Segments { get; private set; }
         public int ValidatedBends { get; private set; }
         public int FallbackBends { get; private set; }
+        public int ValidatedStraights { get; private set; }
+        public int FallbackStraights { get; private set; }
+        public int FallbackClearances { get; private set; }
         public IReadOnlyList<string> Diagnostics { get; private set; }
         internal TrayGeometryBuildResult(List<TraySegment> segments, int validated, List<string> diagnostics)
+            : this(segments, validated, diagnostics.Count, 0, 0, diagnostics) { }
+
+        internal TrayGeometryBuildResult(List<TraySegment> segments, int validated, int fallbackBends,
+            int validatedStraights, int fallbackStraights, List<string> diagnostics, int fallbackClearances = 0)
         {
             Segments = new ReadOnlyCollection<TraySegment>(segments);
-            ValidatedBends = validated; FallbackBends = diagnostics.Count;
+            ValidatedBends = validated; FallbackBends = fallbackBends;
+            ValidatedStraights = validatedStraights; FallbackStraights = fallbackStraights;
+            FallbackClearances = fallbackClearances;
             Diagnostics = new ReadOnlyCollection<string>(diagnostics);
         }
     }
 
     /// <summary>
-    /// Conservative axis-aligned 90-degree bend reconstruction. Actual mesh face
-    /// evidence and two neighbouring straight ends are mandatory. Unsupported or
-    /// ambiguous shapes retain the existing world-box-axis approximation.
+    /// Reconstructs typed straights and circular bends from measured mesh end
+    /// sections and compatible neighboring ports. Legacy world-face quarter bends
+    /// remain supported; unproved shapes retain a reported world-box approximation.
     /// </summary>
     public static class TrayGeometryBuilder
     {
         public const double PortToleranceMeters = 0.02;
         private const double FaceBandMeters = 0.003;
         private const double RadiusToleranceMeters = 0.002;
-        private static readonly Regex BendName = new Regex(@"\b(?:BEND|ELBOW)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        private static readonly Regex StraightName = new Regex(@"\b(?:FTUBE|TUBE|STRAIGHT)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex BendName = new Regex(@"(?<![A-Za-z0-9])(?:BEND|ELBOW)(?![A-Za-z0-9])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        private static readonly Regex StraightName = new Regex(@"(?<![A-Za-z0-9])(?:FTUBE|TUBE|STRAIGHT)(?![A-Za-z0-9])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         public static bool IsBendOrElbow(string shapeName) { return BendName.IsMatch(shapeName ?? string.Empty); }
+        public static bool IsStraight(string shapeName) { return StraightName.IsMatch(shapeName ?? string.Empty); }
 
         public static TrayGeometryBuildResult Build(IEnumerable<TrayGeometryInput> inputs,
             CancellationToken cancellationToken = default(CancellationToken))
@@ -92,13 +108,49 @@ namespace AddinRibbon.Routing
             if (values.Any(v => v == null)) throw new ArgumentException("Geometry inputs cannot be null.", "inputs");
             if (values.Select(v => v.Id).Distinct(StringComparer.Ordinal).Count() != values.Length)
                 throw new ArgumentException("Geometry identifiers must be unique.", "inputs");
+            var straightCandidates = new Dictionary<string, List<TrayMeshGeometry.MeshStraight>>(StringComparer.Ordinal);
+            var straightReasons = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var input in values)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (IsBendOrElbow(input.ShapeName) || !IsStraight(input.ShapeName)) continue;
+                string reason;
+                straightCandidates.Add(input.Id, TrayMeshGeometry.StraightCandidates(input, cancellationToken, out reason));
+                straightReasons.Add(input.Id, reason);
+            }
+            var meshBends = new Dictionary<string, TrayMeshGeometry.MeshBend>(StringComparer.Ordinal);
+            var bendReasons = new Dictionary<string, string>(StringComparer.Ordinal);
+            var candidates = straightCandidates.Values.SelectMany(fits => fits).ToArray();
+            foreach (var input in values)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!IsBendOrElbow(input.ShapeName) || input.Mesh == null) continue;
+                var adjacent = candidates.Where(fit => fit.Input.Id != input.Id &&
+                    (fit.Input.Categories & input.Categories) != CableCategory.None &&
+                    (NearBounds(input, fit.Start.Center) || NearBounds(input, fit.End.Center))).ToArray();
+                TrayMeshGeometry.MeshBend bend;
+                string reason;
+                if (adjacent.Length > 128) reason = "too many neighboring mesh port candidates for a unique bend";
+                else if (TrayBendMeshGeometry.TryFit(input, adjacent, cancellationToken, out bend, out reason))
+                    meshBends.Add(input.Id, bend);
+                bendReasons.Add(input.Id, reason);
+            }
+            var meshStraights = TrayMeshGeometry.ResolveStraights(straightCandidates, meshBends, values, cancellationToken);
             var ends = new EndpointIndex();
             foreach (var input in values)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (IsBendOrElbow(input.ShapeName) || !StraightName.IsMatch(input.ShapeName)) continue;
-                var line = Fallback(input);
+                if (IsBendOrElbow(input.ShapeName) || !IsStraight(input.ShapeName)) continue;
+                TrayMeshGeometry.MeshStraight meshStraight;
+                var line = meshStraights.TryGetValue(input.Id, out meshStraight) ?
+                    new[] { meshStraight.Start.Center.Point, meshStraight.End.Center.Point } : Fallback(input);
                 int axis = LongestAxis(input);
+                if (meshStraight != null)
+                {
+                    double x = Math.Abs(meshStraight.Direction.X), y = Math.Abs(meshStraight.Direction.Y), z = Math.Abs(meshStraight.Direction.Z);
+                    if (Math.Max(x, Math.Max(y, z)) < 1 - 0.000001) continue;
+                    axis = x >= y && x >= z ? 0 : y >= z ? 1 : 2;
+                }
                 if (line[0].DistanceTo(line[1]) == 0) continue;
                 ends.Add(new StraightEnd(input, axis, line[0], line[1]));
                 ends.Add(new StraightEnd(input, axis, line[1], line[0]));
@@ -106,20 +158,92 @@ namespace AddinRibbon.Routing
             var segments = new List<TraySegment>();
             var diagnostics = new List<string>();
             int validated = 0;
+            int fallbackBends = 0;
             foreach (var input in values)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 RoutePoint[] points = Fallback(input);
+                bool validatedBend = false;
+                RouteConnectionPort[] verifiedPorts = null;
                 if (IsBendOrElbow(input.ShapeName))
                 {
                     string reason;
                     RoutePoint[] arc;
-                    if (TryBend(input, ends, cancellationToken, out arc, out reason)) { points = arc; validated++; }
-                    else diagnostics.Add(input.Id + ": " + reason);
+                    TrayMeshGeometry.MeshBend meshBend;
+                    if (meshBends.TryGetValue(input.Id, out meshBend))
+                    {
+                        points = meshBend.Points; validated++; validatedBend = true;
+                        verifiedPorts = new[] { ConnectionPort(meshBend.Start), ConnectionPort(meshBend.End) };
+                    }
+                    else if (TryBend(input, ends, cancellationToken, out arc, out reason))
+                    {
+                        points = arc; validated++; validatedBend = true;
+                        if (input.Mesh != null && bendReasons.ContainsKey(input.Id))
+                            diagnostics.Add(input.Id + ": " + bendReasons[input.Id] + "; using world-face quarter-circle approximation");
+                    }
+                    else
+                    {
+                        fallbackBends++;
+                        diagnostics.Add(input.Id + ": " + (bendReasons.ContainsKey(input.Id) ? bendReasons[input.Id] : reason));
+                    }
                 }
-                segments.Add(new TraySegment(input.Id, input.RouteName, input.Categories, points, connectionsAtEndsOnly: points.Length > 2));
+                else if (IsStraight(input.ShapeName))
+                {
+                    TrayMeshGeometry.MeshStraight meshStraight;
+                    if (meshStraights.TryGetValue(input.Id, out meshStraight))
+                    {
+                        points = new[] { meshStraight.Start.Center.Point, meshStraight.End.Center.Point };
+                        verifiedPorts = new[] { ConnectionPort(meshStraight.Start), ConnectionPort(meshStraight.End) };
+                    }
+                    else if (input.Mesh != null)
+                        diagnostics.Add(input.Id + ": " + (straightReasons[input.Id] ?? "straight axis needs unique neighboring port evidence"));
+                }
+                else diagnostics.Add(input.Id + ": shape has no validated tray centerline; using world-box-axis approximation");
+                var connectionSurfaces = new List<TrayMeshClearance>();
+                if (verifiedPorts != null && input.Mesh != null)
+                {
+                    foreach (var portSet in validatedBend ?
+                        verifiedPorts.Select(port => new[] { port }) : new[] { verifiedPorts })
+                    {
+                        TrayMeshClearance surface;
+                        string reason;
+                        if (TrayMeshClearance.TryCreate(input.Mesh, portSet, validatedBend,
+                            cancellationToken, out surface, out reason)) connectionSurfaces.Add(surface);
+                        else
+                        {
+                            connectionSurfaces.Clear();
+                            diagnostics.Add(input.Id + ": physical clearance evidence is unavailable; " + reason);
+                            break;
+                        }
+                    }
+                }
+                else if (input.Mesh != null && !validatedBend)
+                {
+                    TrayMeshClearance surface;
+                    string reason;
+                    if (TrayMeshClearance.TryCreate(input.Mesh, null, false, cancellationToken,
+                        out surface, out reason)) connectionSurfaces.Add(surface);
+                    else diagnostics.Add(input.Id + ": physical clearance evidence is unavailable; " + reason);
+                }
+                segments.Add(new TraySegment(input.Id, input.RouteName, input.Categories, points,
+                    validatedBend, verifiedPorts, connectionSurfaces));
             }
-            return new TrayGeometryBuildResult(segments, validated, diagnostics);
+            return new TrayGeometryBuildResult(segments, validated, fallbackBends, meshStraights.Count,
+                straightCandidates.Count - meshStraights.Count, diagnostics,
+                segments.Count(segment => segment.ConnectionSurfaces.Count == 0));
+        }
+
+        private static RouteConnectionPort ConnectionPort(TrayMeshGeometry.MeshPort port)
+        {
+            return new RouteConnectionPort(port.Center.Point, port.Outward.Point, port.U.Point,
+                port.V.Point, port.Width, port.Height);
+        }
+
+        private static bool NearBounds(TrayGeometryInput input, TrayMeshGeometry.Vec point)
+        {
+            return point.X >= input.Minimum.X - PortToleranceMeters && point.X <= input.Maximum.X + PortToleranceMeters &&
+                point.Y >= input.Minimum.Y - PortToleranceMeters && point.Y <= input.Maximum.Y + PortToleranceMeters &&
+                point.Z >= input.Minimum.Z - PortToleranceMeters && point.Z <= input.Maximum.Z + PortToleranceMeters;
         }
 
         private static bool TryBend(TrayGeometryInput input, EndpointIndex ends, CancellationToken token,

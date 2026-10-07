@@ -45,6 +45,9 @@ internal static class Program
             Run("Cancellation before and during calculation", Cancellation);
             Run("45 x 45 intersecting grid performance", GridPerformance);
             GeometryTests.Run(Run);
+            EndpointApproachTests.Run(Run);
+            VerifiedPortTests.Run(Run);
+            MeshClearanceTests.Run(Run);
             if (args.Length > 0) Run("Excel report tray code fixtures", () => ExcelCodes(args[0]));
             Console.WriteLine("All " + passed + " routing regression checks passed.");
             return 0;
