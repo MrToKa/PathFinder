@@ -229,12 +229,22 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(selected.AllowedCategories == CableCategory.MV, "Latest leaf rule did not win.");
                 Assert(segments.Where(segment => !session.SegmentItems[segment.Id].Equals(leaf)).All(segment => segment.AllowedCategories == CableCategory.Control), "Leaf override changed siblings.");
             });
-            Check("geometry_coordinates_convert_document_units_to_meters", () =>
+            Check("bottom_face_base_point_converts_document_units_to_meters", () =>
             {
-                var raw = leaf.BoundingBox().Center;
+                var endpoint = leaves.FirstOrDefault(item => VisibleHeightInMeters(item) > 0.000001);
+                Assert(endpoint != null, "Sample has no visible endpoint with measurable height.");
                 double scale = UnitConversion.ScaleFactor(document.Units, Units.Meters);
-                var metres = session.CenterInMeters(leaf);
-                AssertNear(metres.X, raw.X * scale); AssertNear(metres.Y, raw.Y * scale); AssertNear(metres.Z, raw.Z * scale);
+                using (var box = endpoint.BoundingBox(true))
+                using (var minimum = box.Min)
+                using (var maximum = box.Max)
+                {
+                    var metres = session.BasePointInMeters(endpoint);
+                    AssertNear(metres.X, (minimum.X + maximum.X) * 0.5 * scale);
+                    AssertNear(metres.Y, (minimum.Y + maximum.Y) * 0.5 * scale);
+                    AssertNear(metres.Z, minimum.Z * scale);
+                    Assert(Math.Abs(metres.Z - (minimum.Z + maximum.Z) * 0.5 * scale) > 0.0000005,
+                        "Endpoint base point was indistinguishable from its full-height centre.");
+                }
                 AssertNear(UnitConversion.ScaleFactor(Units.Millimeters, Units.Meters), 0.001);
                 AssertNear(UnitConversion.ScaleFactor(Units.Feet, Units.Meters), 0.3048);
             });
@@ -434,7 +444,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(Wait(session.CaptureSegmentsAsync(CancellationToken.None)).Count == original.Count, "Unhiding children of an added route parent did not restore the network.");
             }
         });
-        Check("visible_parent_center_uses_only_remaining_visible_geometry_bounds", () =>
+        Check("visible_parent_base_point_excludes_hidden_lower_geometry", () =>
         {
             using (var hidden = new HiddenSnapshot(document, all))
             using (var session = new RoutingSession())
@@ -456,44 +466,46 @@ public sealed class PathFinderSmoke : AddInPlugin
                     // the independent union includes every drawable shape.
                     if (parent.Descendants.Any(item => item.HasGeometry && item.Children.Any())) continue;
                     var children = group.Select(pair => pair.Leaf).ToList();
-                    var originalCenter = CenterOfLeafUnion(children, boxes, scale);
-                    var candidates = children.OrderByDescending(leaf => CenterOfLeafUnion(new[] { leaf }, boxes, scale).DistanceTo(originalCenter)).Take(8);
+                    var originalBase = BasePointOfLeafUnion(children, boxes, scale);
+                    var candidates = children.OrderByDescending(leaf => boxes[leaf][2]).Take(8);
                     foreach (var keep in candidates)
                     {
-                        if (CenterOfLeafUnion(new[] { keep }, boxes, scale).DistanceTo(originalCenter) <= 0.000001) continue;
+                        if (boxes[keep][2] * scale <= originalBase.Z + 0.000001) continue;
                         if (++probes > 32) break;
                         hidden.Restore();
                         document.Models.SetHidden(children.Where(leaf => !leaf.Equals(keep)), true);
                         var remaining = children.Where(EffectivelyVisible).ToList();
                         if (remaining.Count == 0) continue; // Native instance hiding may also hide keep.
-                        var expected = CenterOfLeafUnion(remaining, boxes, scale);
-                        if (expected.DistanceTo(originalCenter) <= 0.000001) continue;
-                        var actual = session.CenterInMeters(parent);
+                        var expected = BasePointOfLeafUnion(remaining, boxes, scale);
+                        if (expected.Z <= originalBase.Z + 0.000001) continue;
+                        Assert(children.Any(leaf => !EffectivelyVisible(leaf) && boxes[leaf][2] * scale < expected.Z - 0.000001),
+                            "Visible-parent fixture did not hide geometry below the remaining bottom face.");
+                        var actual = session.BasePointInMeters(parent);
                         AssertNear(actual.X, expected.X); AssertNear(actual.Y, expected.Y); AssertNear(actual.Z, expected.Z);
                         document.Models.SetHidden(children, true);
                         Assert(!RoutingSession.IsVisibleEndpoint(parent), "Parent whose entire geometry is hidden remained a valid endpoint.");
-                        ExpectInvalidWords(() => session.CenterInMeters(parent), "hidden", "visible");
+                        ExpectInvalidWords(() => session.BasePointInMeters(parent), "hidden", "visible");
                         verified = true;
                         break;
                     }
                     if (verified || probes > 32) break;
                 }
-                Assert(verified, "Sample contains no independently hideable parent whose visible geometry centre measurably changes.");
+                Assert(verified, "Sample contains no independently hideable parent whose visible bottom face rises when lower geometry is hidden.");
             }
         });
     }
 
-    private static RoutePoint CenterOfLeafUnion(IEnumerable<ModelItem> leaves, Dictionary<ModelItem, double[]> boxes, double metresPerUnit)
+    private static RoutePoint BasePointOfLeafUnion(IEnumerable<ModelItem> leaves, Dictionary<ModelItem, double[]> boxes, double metresPerUnit)
     {
         double minX = double.PositiveInfinity, minY = double.PositiveInfinity, minZ = double.PositiveInfinity;
-        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity, maxZ = double.NegativeInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
         foreach (var leaf in leaves)
         {
             var box = boxes[leaf];
             minX = Math.Min(minX, box[0]); minY = Math.Min(minY, box[1]); minZ = Math.Min(minZ, box[2]);
-            maxX = Math.Max(maxX, box[3]); maxY = Math.Max(maxY, box[4]); maxZ = Math.Max(maxZ, box[5]);
+            maxX = Math.Max(maxX, box[3]); maxY = Math.Max(maxY, box[4]);
         }
-        return new RoutePoint((minX + maxX) * 0.5 * metresPerUnit, (minY + maxY) * 0.5 * metresPerUnit, (minZ + maxZ) * 0.5 * metresPerUnit);
+        return new RoutePoint((minX + maxX) * 0.5 * metresPerUnit, (minY + maxY) * 0.5 * metresPerUnit, minZ * metresPerUnit);
     }
 
     private DuplicateFixture FindIndependentVisibleDuplicate(List<ModelItem> all)
@@ -845,21 +857,26 @@ public sealed class PathFinderSmoke : AddInPlugin
         Check("manual_ui_handlers_assign_pick_calculate_show_reverse_restore", () =>
         {
             var before = Snapshot(geometry);
+            var endpoints = leaves.Where(item => VisibleHeightInMeters(item) > 0.000001).Take(2).ToList();
+            Assert(endpoints.Count == 2, "Sample has fewer than two visible endpoints with measurable height.");
+            var fromLeaf = endpoints[0]; var toLeaf = endpoints[1];
+            var expectedFrom = NativeBasePointInMeters(fromLeaf); var expectedTo = NativeBasePointInMeters(toLeaf);
             using (var control = new PathFinderControl())
             {
                 control.Size = new System.Drawing.Size(800, 700);
                 control.CreateControl();
-                document.CurrentSelection.CopyFrom(new[] { leaves[0] });
+                document.CurrentSelection.CopyFrom(new[] { fromLeaf });
                 Wait((Task)Invoke(control, "AssignAsync"));
                 var session = Field<RoutingSession>(control, "session");
                 Assert(session.Assignments.Count == 1 && session.Assignments[0].LeafCount == 1, "UI did not capture selected route leaf.");
-                document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Invoke(control, "Pick", true);
-                document.CurrentSelection.CopyFrom(new[] { leaves[1] }); Invoke(control, "Pick", false);
+                document.CurrentSelection.CopyFrom(new[] { fromLeaf }); Invoke(control, "Pick", true);
+                document.CurrentSelection.CopyFrom(new[] { toLeaf }); Invoke(control, "Pick", false);
                 var pause = Field<CheckBox>(control, "pause");
                 Assert(pause.Checked, "Manual UI flow unexpectedly unpaused automatic calculation.");
                 Wait((Task)Invoke(control, "CalculateAsync"));
                 var result = Field<RouteResult>(control, "result");
                 Assert(result != null && result.Success, "Manual calculation failed while Pause checked: " + Field<TextBox>(control, "output").Text);
+                AssertUiBasePoints(control, result, expectedFrom, expectedTo);
                 Assert(result.ConnectionGapCount == 0 && result.ConnectionGapLengthMeters == 0,
                     "A single native tray counted equipment attachment legs as connection gaps.");
                 AssertGapMetricsOutput(control, result);
@@ -868,11 +885,12 @@ public sealed class PathFinderSmoke : AddInPlugin
                 var visualization = Field<PathVisualization>(control, "visualization");
                 Assert(visualization.IsShown, "Show path handler did not apply visualization.");
                 AssertOverlayPoints(result.PathPoints);
-                AssertNear(leaves[0].Geometry.ActiveTransparency, 0); AssertNear(leaves[1].Geometry.ActiveTransparency, 0);
+                AssertNear(fromLeaf.Geometry.ActiveTransparency, 0); AssertNear(toLeaf.Geometry.ActiveTransparency, 0);
                 Invoke(control, "ReversePath");
                 AssertOverlayPoints(result.PathPoints.Reverse().ToArray());
-                Assert(Field<ModelItem>(control, "resolvedFrom").Equals(leaves[1]) && Field<ModelItem>(control, "resolvedTo").Equals(leaves[0]), "Reverse did not swap resolved objects.");
-                AssertColor(leaves[1], 0.10, 0.85, 0.25); AssertColor(leaves[0], 1.00, 0.45, 0.05);
+                AssertUiBasePoints(control, Field<RouteResult>(control, "result"), expectedTo, expectedFrom);
+                Assert(Field<ModelItem>(control, "resolvedFrom").Equals(toLeaf) && Field<ModelItem>(control, "resolvedTo").Equals(fromLeaf), "Reverse did not swap resolved objects.");
+                AssertColor(toLeaf, 0.10, 0.85, 0.25); AssertColor(fromLeaf, 1.00, 0.45, 0.05);
                 Invoke(control, "RestoreView"); Assert(!visualization.IsShown, "Restore handler left visualization active.");
                 Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Restore handler left the cable overlay active.");
                 AssertAppearance(before, true, true);
@@ -882,6 +900,52 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Endpoint edit retained the previous cable overlay.");
                 Assert(!Field<System.Windows.Forms.Timer>(control, "debounce").Enabled, "Paused endpoint edit started an automatic calculation.");
                 Assert(Field<Button>(control, "calculate").Enabled, "Pause disabled manual Calculate path after editing.");
+            }
+            AssertAppearance(before, true, true);
+        });
+        Check("moved_endpoint_base_point_invalidates_show_and_manual_recalculation_uses_new_base", () =>
+        {
+            var before = Snapshot(geometry);
+            var endpoints = leaves.Where(item => VisibleHeightInMeters(item) > 0.000001).Take(2).ToList();
+            Assert(endpoints.Count == 2, "Sample has fewer than two visible endpoints with measurable height.");
+            var routeLeaf = endpoints[0]; var movedEndpoint = endpoints[1];
+            using (var originalBox = movedEndpoint.BoundingBox(true))
+            {
+                try
+                {
+                    using (var control = new PathFinderControl())
+                    {
+                        document.CurrentSelection.CopyFrom(new[] { routeLeaf }); Wait((Task)Invoke(control, "AssignAsync"));
+                        document.CurrentSelection.CopyFrom(new[] { routeLeaf }); Invoke(control, "Pick", true);
+                        document.CurrentSelection.CopyFrom(new[] { movedEndpoint }); Invoke(control, "Pick", false);
+                        Wait((Task)Invoke(control, "CalculateAsync"));
+                        var originalFrom = NativeBasePointInMeters(routeLeaf); var originalTo = NativeBasePointInMeters(movedEndpoint);
+                        AssertUiBasePoints(control, Field<RouteResult>(control, "result"), originalFrom, originalTo);
+                        Invoke(control, "ShowPath");
+                        Assert(RoutePathOverlay.IsShownFor(document), "Endpoint freshness fixture did not start with a displayed cable.");
+                        // Change only the endpoint. The selected route remains current,
+                        // making the endpoint-base-point check responsible for rejection.
+                        using (var offset = new Vector3D(0, 0, 0.125 / UnitConversion.ScaleFactor(document.Units, Units.Meters)))
+                        using (var transform = Transform3D.CreateTranslation(offset))
+                            document.Models.OverridePermanentTransform(new[] { movedEndpoint }, transform, false);
+                        var changedTo = NativeBasePointInMeters(movedEndpoint);
+                        AssertNear(changedTo.Z, originalTo.Z + 0.125);
+                        var session = Field<RoutingSession>(control, "session");
+                        Assert(session.AreCapturedSegmentsCurrent(), "Endpoint-only transform also changed the selected route fixture.");
+                        Assert(Field<RouteResult>(control, "result") != null, "Endpoint fixture was invalidated before the Show freshness check.");
+                        Invoke(control, "ShowPath");
+                        Assert(Field<RouteResult>(control, "result") == null && !Field<PathVisualization>(control, "visualization").IsShown
+                            && RoutePathOverlay.DisplayedPoints.Count == 0, "Show accepted a result with an outdated endpoint base point.");
+                        Assert(Field<CheckBox>(control, "pause").Checked && !Field<System.Windows.Forms.Timer>(control, "debounce").Enabled,
+                            "Rejecting a stale base point enabled automatic calculation.");
+                        Wait((Task)Invoke(control, "CalculateAsync"));
+                        var recalculated = Field<RouteResult>(control, "result");
+                        AssertUiBasePoints(control, recalculated, NativeBasePointInMeters(routeLeaf), changedTo);
+                        Invoke(control, "ShowPath"); AssertOverlayPoints(recalculated.PathPoints);
+                    }
+                }
+                finally { document.Models.ResetPermanentTransform(new[] { movedEndpoint }); }
+                using (var restoredBox = movedEndpoint.BoundingBox(true)) AssertBounds(restoredBox, originalBox);
             }
             AssertAppearance(before, true, true);
         });
@@ -909,7 +973,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                 var tray = Wait(session.CaptureSegmentsAsync(CancellationToken.None)).Single();
                 // Find an actual off-tray endpoint within a bounded sample subset.
                 var endpoint = leaves.Where(item => !item.Equals(leaves[0]) && RoutingSession.IsVisibleEndpoint(item)).Take(128)
-                    .Select(item => new { Item = item, Distance = DistanceToPolyline(session.CenterInMeters(item), tray.Points) })
+                    .Select(item => new { Item = item, Distance = DistanceToPolyline(NativeBasePointInMeters(item), tray.Points) })
                     .OrderByDescending(item => item.Distance).FirstOrDefault();
                 Assert(endpoint != null && endpoint.Distance > 0.000001 && endpoint.Distance < 1000,
                     "Sample has no bounded visible endpoint away from the selected tray.");
@@ -986,6 +1050,39 @@ public sealed class PathFinderSmoke : AddInPlugin
 
     private static T Field<T>(object target, string name)
     { return (T)target.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(target); }
+
+    private RoutePoint NativeBasePointInMeters(ModelItem item)
+    {
+        double scale = UnitConversion.ScaleFactor(document.Units, Units.Meters);
+        using (var box = item.BoundingBox(true))
+        using (var minimum = box.Min)
+        using (var maximum = box.Max)
+        {
+            Assert(!box.IsEmpty, "Endpoint fixture has no visible geometry.");
+            return new RoutePoint((minimum.X + maximum.X) * 0.5 * scale,
+                (minimum.Y + maximum.Y) * 0.5 * scale, minimum.Z * scale);
+        }
+    }
+
+    private double VisibleHeightInMeters(ModelItem item)
+    {
+        if (!EffectivelyVisible(item)) return 0;
+        using (var box = item.BoundingBox(true))
+        using (var minimum = box.Min)
+        using (var maximum = box.Max)
+            return box.IsEmpty ? 0 : (maximum.Z - minimum.Z) * UnitConversion.ScaleFactor(document.Units, Units.Meters);
+    }
+
+    private static void AssertUiBasePoints(PathFinderControl control, RouteResult result, RoutePoint expectedFrom, RoutePoint expectedTo)
+    {
+        Assert(result != null && result.Success && result.PathPoints.Count >= 2, "Base-point UI fixture did not calculate a successful cable line.");
+        AssertPoint(result.PathPoints.First(), expectedFrom); AssertPoint(result.PathPoints.Last(), expectedTo);
+        AssertPoint(Field<RoutePoint>(control, "capturedFrom"), expectedFrom);
+        AssertPoint(Field<RoutePoint>(control, "capturedTo"), expectedTo);
+    }
+
+    private static void AssertPoint(RoutePoint actual, RoutePoint expected)
+    { AssertNear(actual.X, expected.X); AssertNear(actual.Y, expected.Y); AssertNear(actual.Z, expected.Z); }
 
     private static void AssertSecondaryForThreshold(RouteResult result, double threshold)
     {

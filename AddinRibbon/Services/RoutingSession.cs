@@ -195,13 +195,17 @@ namespace AddinRibbon.Services
             using (var box = item.BoundingBox(true)) return !box.IsEmpty;
         }
 
-        public RoutePoint CenterInMeters(ModelItem item)
+        /// <summary>Centre of the bottom face of the visible world-space bounding box, in metres.</summary>
+        public RoutePoint BasePointInMeters(ModelItem item)
         {
             if (!IsVisible(item)) throw new InvalidOperationException("From / To object is hidden. Choose a visible object.");
             using (var box = item.BoundingBox(true))
             {
                 if (box.IsEmpty) throw new InvalidOperationException("Object has no visible geometry: " + item.DisplayName);
-                return ToMeters(box.Center, UnitConversion.ScaleFactor(document.Units, Units.Meters));
+                double scale = UnitConversion.ScaleFactor(document.Units, Units.Meters);
+                using (var centre = box.Center)
+                using (var minimum = box.Min)
+                    return new RoutePoint(centre.X * scale, centre.Y * scale, minimum.Z * scale);
             }
         }
 

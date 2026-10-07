@@ -156,7 +156,7 @@ namespace AddinRibbon.Ctr
 
         private void UpdateSecondaryExplanation()
         {
-            secondaryExplanation.Text = "SECONDARY: endpoint centre is farther than " + secondaryDistance.Value.ToString("F2")
+            secondaryExplanation.Text = "SECONDARY: base point is farther than " + secondaryDistance.Value.ToString("F2")
                 + " m from an allowed route centreline. Lengths are approximate.";
         }
 
@@ -266,7 +266,7 @@ namespace AddinRibbon.Ctr
                 var fromItem = await session.ResolveAsync(from.Text, pickedFrom, token);
                 var toItem = await session.ResolveAsync(to.Text, pickedTo, token);
                 var trays = await session.CaptureSegmentsAsync(token);
-                var fromPoint = session.CenterInMeters(fromItem); var toPoint = session.CenterInMeters(toItem);
+                var fromPoint = session.BasePointInMeters(fromItem); var toPoint = session.BasePointInMeters(toItem);
                 var category = (CableCategory)Enum.Parse(typeof(CableCategory), (string)cableType.SelectedItem);
                 var options = new RoutingOptions { ConnectionToleranceMeters = (double)gap.Value, SecondaryDistanceMeters = (double)secondaryDistance.Value };
                 status.Text = "Calculating path through " + trays.Count + " geometry leaves...";
@@ -301,8 +301,8 @@ namespace AddinRibbon.Ctr
             try
             {
                 if (!session.AreCapturedSegmentsCurrent() || !RoutingSession.IsVisible(resolvedFrom) || !RoutingSession.IsVisible(resolvedTo)
-                    || session.CenterInMeters(resolvedFrom).DistanceTo(capturedFrom) > 1e-9
-                    || session.CenterInMeters(resolvedTo).DistanceTo(capturedTo) > 1e-9)
+                    || session.BasePointInMeters(resolvedFrom).DistanceTo(capturedFrom) > 1e-9
+                    || session.BasePointInMeters(resolvedTo).DistanceTo(capturedTo) > 1e-9)
                 {
                     InvalidateResult();
                     status.Text = "Object geometry changed. Calculate the path again.";
