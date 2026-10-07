@@ -15,6 +15,8 @@ namespace AddinRibbon.Services
         private readonly int _uiThreadId = Thread.CurrentThread.ManagedThreadId;
         private Document _document;
         private List<MaterialSnapshot> _materials;
+        private List<ModelItem> _selectionBefore;
+        private HashSet<ModelItem> _selectedPath;
         private bool _disposed;
 
         public bool IsShown { get { return _materials != null; } }
@@ -56,6 +58,8 @@ namespace AddinRibbon.Services
             var snapshots = geometryItems.Select(Capture).ToList();
             _document = document;
             _materials = snapshots;
+            _selectionBefore = document.CurrentSelection.SelectedItems.ToList();
+            _selectedPath = new HashSet<ModelItem>(route);
             try
             {
                 // Bulk native operations avoid one override call for every model object.
@@ -67,6 +71,7 @@ namespace AddinRibbon.Services
                 SetColor(document, fromGeometry, 0.10, 0.85, 0.25);
                 SetColor(document, toGeometry, 1.00, 0.45, 0.05);
                 SetColor(document, commonGeometry, 0.75, 0.20, 1.00);
+                document.CurrentSelection.CopyFrom(route);
             }
             catch
             {
@@ -80,18 +85,24 @@ namespace AddinRibbon.Services
             VerifyThread();
             var document = _document;
             var materials = _materials;
+            var selectionBefore = _selectionBefore;
+            var selectedPath = _selectedPath;
             _document = null;
             _materials = null;
+            _selectionBefore = null;
+            _selectedPath = null;
             if (document == null || materials == null || document.IsDisposed) return;
 
             // Removed models can invalidate captured native items. Never resolve an old
             // index path against a new model; it could point at a different object.
             var live = materials.Where(snapshot => !snapshot.Item.IsDisposed).ToList();
-            if (live.Count == 0) return;
             try
             {
-                document.Models.ResetTemporaryMaterials(live.Select(snapshot => snapshot.Item));
-                RestorePreviousTemporaryAppearance(document, live);
+                if (live.Count > 0)
+                {
+                    document.Models.ResetTemporaryMaterials(live.Select(snapshot => snapshot.Item));
+                    RestorePreviousTemporaryAppearance(document, live);
+                }
             }
             catch (ObjectDisposedException)
             {
@@ -100,6 +111,10 @@ namespace AddinRibbon.Services
             catch (ArgumentException)
             {
                 // Collection replacement can remove items before its change event.
+            }
+            finally
+            {
+                RestoreSelection(document, selectionBefore, selectedPath);
             }
         }
 
@@ -114,6 +129,27 @@ namespace AddinRibbon.Services
         {
             return new HashSet<ModelItem>(items.SelectMany(item => item.DescendantsAndSelf)
                 .Where(item => item.HasGeometry));
+        }
+
+        private static void RestoreSelection(Document document, List<ModelItem> previous, HashSet<ModelItem> path)
+        {
+            if (previous == null || path == null || document.IsDisposed || document.IsClear) return;
+            try
+            {
+                // A later manual selection belongs to the user, not this temporary view.
+                if (!path.SetEquals(document.CurrentSelection.SelectedItems)) return;
+                var live = new List<ModelItem>();
+                foreach (var item in previous)
+                {
+                    if (item.IsDisposed) continue;
+                    try { document.Models.CreatePathId(item); live.Add(item); }
+                    catch (ObjectDisposedException) { }
+                    catch (ArgumentException) { }
+                }
+                document.CurrentSelection.CopyFrom(live);
+            }
+            catch (ObjectDisposedException) { }
+            catch (ArgumentException) { }
         }
 
         private static MaterialSnapshot Capture(ModelItem item)

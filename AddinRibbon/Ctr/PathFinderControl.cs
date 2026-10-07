@@ -361,7 +361,7 @@ namespace AddinRibbon.Ctr
                 }
                 visualization.Show(session.Document, result.SegmentIds.Select(id => session.SegmentItems[id]), resolvedFrom, resolvedTo);
                 RoutePathOverlay.Show(session.Document, result.PathPoints);
-                status.Text = "Cable line: yellow. From: green. To: orange. Trays: blue. Everything else: 95% transparency.";
+                status.Text = "Path selected in Selection Tree. Cable line: yellow. From: green. To: orange. Everything else: 95% transparency.";
             }
             catch (Exception e) { RestoreView(); status.Text = e.Message; }
             UpdateButtons();

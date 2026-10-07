@@ -42,6 +42,7 @@ public sealed class PathFinderSmoke : AddInPlugin
             var leaves = geometry.Where(item => !item.Children.Any() && !item.BoundingBox().IsEmpty).ToList();
             if (leaves.Count < 5) throw new InvalidOperationException("Smoke sample must have at least five geometry leaves.");
             TestVisualization(leaves);
+            TestPathSelection(leaves);
             TestRoutingSession(leaves);
             TestVisibleObjects(leaves);
             TestCableOverlay();
@@ -194,6 +195,86 @@ public sealed class PathFinderSmoke : AddInPlugin
             });
             document.Models.SetHidden(new[] { background }, false);
         }
+    }
+
+    private void TestPathSelection(List<ModelItem> leaves)
+    {
+        var from = leaves[0]; var to = leaves[1]; var first = leaves[2]; var second = leaves[3]; var previous = leaves[4];
+        Check("show_path_selects_exact_distinct_route_leaves_without_extra_endpoints", () =>
+        {
+            document.CurrentSelection.CopyFrom(new[] { previous });
+            var before = Snapshot(geometry);
+            using (var visualization = new PathVisualization())
+            {
+                visualization.Show(document, new[] { first, second, first, null }, from, to);
+                AssertSelection(first, second);
+                AssertColor(from, 0.10, 0.85, 0.25); AssertColor(to, 1.00, 0.45, 0.05);
+                AssertNear(first.Geometry.ActiveTransparency, 0); AssertNear(second.Geometry.ActiveTransparency, 0);
+                using (var image = document.ActiveView.GenerateImage(ImageGenerationStyle.ScenePlusOverlay, 800, 600, true))
+                {
+                    Assert(image != null, "Selected path scene did not render.");
+                    image.Save(Path.Combine(Path.GetDirectoryName(output), "path-selected-scene.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+                document.CurrentSelection.CopyFrom(new ModelItem[0]);
+                using (var image = document.ActiveView.GenerateImage(ImageGenerationStyle.ScenePlusOverlay, 800, 600, true))
+                {
+                    Assert(image != null, "Unselected comparison scene did not render.");
+                    image.Save(Path.Combine(Path.GetDirectoryName(output), "path-unselected-scene.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+                document.CurrentSelection.CopyFrom(new[] { second, first });
+                visualization.Restore();
+                AssertSelection(previous);
+            }
+            AssertAppearance(before, true, true);
+        });
+        Check("repeated_show_and_reverse_keep_original_selection_and_restore_by_identity_set", () =>
+        {
+            var parent = previous.Parent ?? previous;
+            document.CurrentSelection.CopyFrom(new[] { parent });
+            using (var visualization = new PathVisualization())
+            {
+                visualization.Show(document, new[] { first, second }, from, to);
+                visualization.Show(document, new[] { second, first }, to, from);
+                AssertSelection(first, second);
+                visualization.Show(document, new[] { first }, from, to);
+                AssertSelection(first);
+                visualization.Restore(); AssertSelection(parent);
+                visualization.Restore(); AssertSelection(parent);
+            }
+        });
+        Check("restore_and_dispose_preserve_later_manual_selection_or_clear", () =>
+        {
+            document.CurrentSelection.CopyFrom(new[] { previous });
+            using (var visualization = new PathVisualization())
+            {
+                visualization.Show(document, new[] { first }, from, to);
+                document.CurrentSelection.CopyFrom(new[] { to, previous });
+                visualization.Restore(); AssertSelection(to, previous);
+                visualization.Show(document, new[] { second }, from, to);
+                document.CurrentSelection.CopyFrom(new ModelItem[0]);
+                visualization.Restore(); AssertSelection();
+                visualization.Show(document, new[] { first }, from, to);
+                document.CurrentSelection.CopyFrom(new[] { from });
+            }
+            AssertSelection(from);
+        });
+        Check("dispose_restores_original_empty_selection_and_materials", () =>
+        {
+            document.CurrentSelection.CopyFrom(new ModelItem[0]);
+            var before = Snapshot(geometry);
+            using (var visualization = new PathVisualization())
+            {
+                visualization.Show(document, new[] { first }, from, to);
+                AssertSelection(first);
+            }
+            AssertSelection(); AssertAppearance(before, true, true);
+        });
+    }
+
+    private void AssertSelection(params ModelItem[] expected)
+    {
+        Assert(new HashSet<ModelItem>(expected).SetEquals(document.CurrentSelection.SelectedItems),
+            "Native Selection Tree selection differs from expected model items.");
     }
 
     private void TestRoutingSession(List<ModelItem> leaves)
@@ -1131,9 +1212,15 @@ public sealed class PathFinderSmoke : AddInPlugin
                     "A single native tray counted equipment attachment legs as connection gaps.");
                 AssertGapMetricsOutput(control, result);
                 Assert(Field<Button>(control, "show").Enabled, "Show path was not enabled after successful calculation.");
+                var selectionBeforeShow = document.CurrentSelection.SelectedItems.ToArray();
+                int revisionBeforeShow = session.Revision; int buildsBeforeShow = session.GeometryBuildCount;
                 Invoke(control, "ShowPath");
                 var visualization = Field<PathVisualization>(control, "visualization");
                 Assert(visualization.IsShown, "Show path handler did not apply visualization.");
+                AssertSelection(result.SegmentIds.Select(id => session.SegmentItems[id]).ToArray());
+                Assert(session.Revision == revisionBeforeShow && session.GeometryBuildCount == buildsBeforeShow
+                    && ReferenceEquals(result, Field<RouteResult>(control, "result")) && !Field<bool>(control, "busy"),
+                    "Native path selection invalidated the result or started a calculation.");
                 AssertOverlayPoints(result.PathPoints);
                 AssertNear(fromLeaf.Geometry.ActiveTransparency, 0); AssertNear(toLeaf.Geometry.ActiveTransparency, 0);
                 int designBuildCount = session.GeometryBuildCount;
@@ -1149,12 +1236,14 @@ public sealed class PathFinderSmoke : AddInPlugin
                     && !Field<bool>(control, "busy") && visualization.IsShown, "Design allowance edit recalculated or cleared the shown path.");
                 AssertOverlayPoints(result.PathPoints);
                 Invoke(control, "ReversePath");
+                AssertSelection(result.SegmentIds.Select(id => session.SegmentItems[id]).ToArray());
                 Assert(Field<TextBox>(control, "output").Text.EndsWith(expectedDesignLine), "Reverse changed the design length.");
                 AssertOverlayPoints(result.PathPoints.Reverse().ToArray());
                 AssertUiBasePoints(control, Field<RouteResult>(control, "result"), expectedTo, expectedFrom);
                 Assert(Field<ModelItem>(control, "resolvedFrom").Equals(toLeaf) && Field<ModelItem>(control, "resolvedTo").Equals(fromLeaf), "Reverse did not swap resolved objects.");
                 AssertColor(toLeaf, 0.10, 0.85, 0.25); AssertColor(fromLeaf, 1.00, 0.45, 0.05);
                 Invoke(control, "RestoreView"); Assert(!visualization.IsShown, "Restore handler left visualization active.");
+                AssertSelection(selectionBeforeShow);
                 Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Restore handler left the cable overlay active.");
                 AssertAppearance(before, true, true);
                 Invoke(control, "ShowPath"); Assert(RoutePathOverlay.IsShownFor(document), "Restored result could not be shown again.");
