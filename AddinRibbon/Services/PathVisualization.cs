@@ -30,6 +30,8 @@ namespace AddinRibbon.Services
 
         public bool IsShown { get { return _materials != null; } }
         public bool HasBackgroundTransparency { get { return _background != null && _background.Mutated; } }
+        public double? AppliedBackgroundTransparency
+        { get { return HasBackgroundTransparency && _background.ValueIsComplete ? (double?)_background.Transparency : null; } }
         public bool IsPathSelected
         {
             get
@@ -154,39 +156,58 @@ namespace AddinRibbon.Services
             _disposed = true;
         }
 
-        public async Task<int> ApplyBackgroundTransparencyAsync(CancellationToken token, Action<int> progress = null)
+        public Task<int> ApplyBackgroundTransparencyAsync(CancellationToken token, Action<int> progress = null)
+        {
+            return ApplyBackgroundTransparencyAsync(0.75, token, progress);
+        }
+
+        public async Task<int> ApplyBackgroundTransparencyAsync(double transparency, CancellationToken token, Action<int> progress = null)
         {
             VerifyThread();
             if (_disposed) throw new ObjectDisposedException(nameof(PathVisualization));
+            if (double.IsNaN(transparency) || double.IsInfinity(transparency) || transparency < 0.0 || transparency > 1.0)
+                throw new ArgumentOutOfRangeException(nameof(transparency), "Transparency must be a finite value between zero and one.");
             token.ThrowIfCancellationRequested();
             if (!IsPathSelected) throw new InvalidOperationException("Show the path and keep its route objects selected first.");
-            if (HasBackgroundTransparency) return _background.Roots.Count;
+            if (HasBackgroundTransparency && _background.ValueIsComplete && _background.Transparency == transparency)
+                return _background.Roots.Count;
             var operation = BeginBackgroundOperation(token);
             var owner = new BackgroundOwner(_document, _materials, _viewGeneration);
-            BackgroundSnapshot captured = null;
+            var previous = _background;
+            BackgroundSnapshot captured = previous;
+            bool mutated = false;
             try
             {
                 // Let the UI paint the operation status and process cancellation first.
                 progress?.Invoke(0);
                 await Task.Delay(1, operation.Token);
                 EnsureBackgroundOwner(owner, operation.Token, true);
-                captured = CaptureBackgroundRoots(owner, operation.Token);
+                if (captured == null) captured = CaptureBackgroundRoots(owner, operation.Token);
                 if (captured.Roots.Count == 0) return 0;
                 _background = captured;
-                await ProcessBackgroundAsync(owner, captured, false, operation.Token, progress, true);
+                await ProcessBackgroundAsync(owner, captured, false, transparency, operation.Token, progress, true,
+                    () => mutated = true);
+                captured.ValueIsComplete = true;
+                if (transparency == 0.0 && ReferenceEquals(_background, captured)) _background = null;
                 return captured.Roots.Count;
             }
             catch
             {
                 if (captured != null && ReferenceEquals(_background, captured))
                 {
-                    if (captured.Mutated && IsBackgroundOwnerCurrent(owner))
+                    if (mutated)
                     {
                         // Reset attempted background overrides to zero even after cancellation.
                         // A new view or disposed model invalidates the owner and stops cleanup.
-                        await ProcessBackgroundAsync(owner, captured, true, CancellationToken.None, null, false);
+                        if (IsBackgroundOwnerCurrent(owner))
+                            await ProcessBackgroundAsync(owner, captured, true, 0.0, CancellationToken.None, null, false);
+                        if (ReferenceEquals(_background, captured)) _background = null;
                     }
-                    if (ReferenceEquals(_background, captured)) _background = null;
+                    else if (ReferenceEquals(_background, captured))
+                    {
+                        // An existing value remains active when canceled before a native mutation.
+                        _background = previous;
+                    }
                 }
                 throw;
             }
@@ -208,7 +229,7 @@ namespace AddinRibbon.Services
                 progress?.Invoke(0);
                 await Task.Delay(1, operation.Token);
                 EnsureBackgroundOwner(owner, operation.Token, false);
-                await ProcessBackgroundAsync(owner, captured, true, operation.Token, progress, false);
+                await ProcessBackgroundAsync(owner, captured, true, 0.0, operation.Token, progress, false);
                 EnsureBackgroundOwner(owner, operation.Token, false);
                 if (ReferenceEquals(_background, captured)) _background = null;
             }
@@ -237,7 +258,7 @@ namespace AddinRibbon.Services
         }
 
         private async Task ProcessBackgroundAsync(BackgroundOwner owner, BackgroundSnapshot captured, bool restoring,
-            CancellationToken token, Action<int> progress, bool requireSelection)
+            double transparency, CancellationToken token, Action<int> progress, bool requireSelection, Action mutationStarted = null)
         {
             int count = restoring ? captured.TouchedCount : captured.Roots.Count;
             for (int index = 0; index < count; index += BackgroundRootBatchSize)
@@ -246,13 +267,19 @@ namespace AddinRibbon.Services
                 int batchCount = Math.Min(BackgroundRootBatchSize, count - index);
                 var roots = captured.Roots.GetRange(index, batchCount);
                 var foreground = CaptureForegroundColors(owner);
+                EnsureBackgroundOwner(owner, token, requireSelection);
+                // A canceled reset/reapply can leave mixed alpha; expose no single applied value.
+                captured.ValueIsComplete = false;
                 if (!restoring)
                 {
                     // Include a possibly partially executed native call in cancellation cleanup.
-                    captured.TouchedCount = index + batchCount;
+                    // Reapplying retains older affected roots too, so rollback cannot leave old alpha behind.
+                    mutationStarted?.Invoke();
+                    captured.TouchedCount = Math.Max(captured.TouchedCount, index + batchCount);
                     captured.Mutated = true;
+                    captured.Transparency = transparency;
                 }
-                try { OverrideTransparencySafely(owner.Document, roots, restoring ? 0.0 : 0.70); }
+                try { OverrideTransparencySafely(owner.Document, roots, transparency); }
                 finally
                 {
                     // Native transparency overrides can coalesce existing temporary colors.
@@ -512,6 +539,8 @@ namespace AddinRibbon.Services
             public readonly List<ModelItem> Roots;
             public int TouchedCount;
             public bool Mutated;
+            public double Transparency;
+            public bool ValueIsComplete;
             public BackgroundSnapshot(List<ModelItem> roots) { Roots = roots; }
         }
 

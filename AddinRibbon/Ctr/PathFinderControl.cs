@@ -27,6 +27,7 @@ namespace AddinRibbon.Ctr
         private readonly NumericUpDown connectionSpare = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 6m, Width = 120 };
         private readonly NumericUpDown secondaryLength = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 0m, Width = 120 };
         private readonly NumericUpDown lengthAllowance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 1m, Value = 0m, Width = 120 };
+        private readonly NumericUpDown backgroundTransparencyPercent = new NumericUpDown { Minimum = 0m, Maximum = 100m, Increment = 5m, Value = 75m, Width = 120 };
         private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
         private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = false };
         private readonly ToolTip approachHint = new ToolTip();
@@ -38,7 +39,7 @@ namespace AddinRibbon.Ctr
         private readonly Button show = MakeButton("Show path");
         private readonly Button reverse = MakeButton("Reverse");
         private readonly Button restore = MakeButton("Restore view");
-        private readonly Button backgroundTransparency = MakeButton("70% transparency");
+        private readonly Button backgroundTransparency = MakeButton("Apply transparency");
         private readonly Button restoreTransparency = MakeButton("0% transparency");
         private readonly Button cancel = MakeButton("Cancel");
         private Document selectionDocument;
@@ -76,12 +77,19 @@ namespace AddinRibbon.Ctr
             connectionSpare.ValueChanged += DesignInputChanged;
             secondaryLength.ValueChanged += DesignInputChanged;
             lengthAllowance.ValueChanged += DesignInputChanged;
+            backgroundTransparencyPercent.ValueChanged += (s, e) =>
+            {
+                decimal rounded = decimal.Round(backgroundTransparencyPercent.Value, 0, MidpointRounding.AwayFromZero);
+                if (backgroundTransparencyPercent.Value != rounded) { backgroundTransparencyPercent.Value = rounded; return; }
+                UpdateButtons();
+            };
             approachHint.SetToolTip(verticalApproach, "Prefer the least horizontal offset among approaches no more than Connection gap farther than the shortest 3D approach.");
             approachHint.SetToolTip(gap, "Maximum empty space between measured tray surfaces. Trays without validated surface evidence use approximate centreline distances and are reported for review.");
             approachHint.SetToolTip(secondaryLength, "Replaces the measured approach at each endpoint marked /SECONDARY. A value of zero includes zero metres for that approach.");
             approachHint.SetToolTip(connectionSpare, "Total connection spare, added once per cable before the percentage increase.");
             approachHint.SetToolTip(lengthAllowance, "Percentage applied after the SECONDARY replacements and connection spare, before rounding up to whole metres.");
-            approachHint.SetToolTip(backgroundTransparency, "After Show path, make other objects 70% transparent. Keep the selected path and From / To opaque.");
+            approachHint.SetToolTip(backgroundTransparencyPercent, "Transparency of other objects: 0% is opaque, 100% is fully transparent. Change this value, then press Apply transparency.");
+            approachHint.SetToolTip(backgroundTransparency, "After Show path, apply the chosen transparency to other objects. Keep the selected path and From / To opaque.");
             approachHint.SetToolTip(restoreTransparency, "Set other objects to 0% transparency while keeping the shown path. This does not restore their earlier transparency values.");
             add.Click += async (s, e) => await AssignAsync();
             remove.Click += (s, e) => RemoveRules();
@@ -238,7 +246,8 @@ namespace AddinRibbon.Ctr
             calculationMode.SizeChanged += (s, e) => sizeApproach();
             verticalApproach.FontChanged += (s, e) => sizeApproach();
             layout.Controls.Add(calculationMode, 0, 3);
-            var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, backgroundTransparency, restoreTransparency, cancel }); layout.Controls.Add(commands, 0, 4);
+            var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore,
+                LabeledOption("Transparency (%)", backgroundTransparencyPercent), backgroundTransparency, restoreTransparency, cancel }); layout.Controls.Add(commands, 0, 4);
             UpdateSecondaryExplanation();
             layout.Controls.Add(secondaryExplanation, 0, 5);
             layout.Controls.Add(output, 0, 6); page.Controls.Add(layout); tabs.TabPages.Add(page);
@@ -429,16 +438,18 @@ namespace AddinRibbon.Ctr
         }
         private async Task ApplyTransparencyAsync()
         {
-            if (busy || !visualization.IsPathSelected || visualization.HasBackgroundTransparency) return;
-            StartOperation("Preparing 70% transparency for other objects...");
+            double transparency = (double)backgroundTransparencyPercent.Value / 100.0;
+            if (busy || !visualization.IsPathSelected || visualization.AppliedBackgroundTransparency == transparency) return;
+            string percentage = backgroundTransparencyPercent.Value.ToString("0") + "%";
+            StartOperation("Preparing " + percentage + " transparency for other objects...");
             try
             {
-                int count = await visualization.ApplyBackgroundTransparencyAsync(operation.Token, countRead =>
+                int count = await visualization.ApplyBackgroundTransparencyAsync(transparency, operation.Token, countRead =>
                 {
-                    if (!IsDisposed) status.Text = "Applying 70% transparency to other objects...";
+                    if (!IsDisposed) status.Text = "Applying " + percentage + " transparency to other objects...";
                 });
                 if (!IsDisposed) status.Text = count == 0 ? "No other objects to make transparent."
-                    : "Other objects: 70% transparency. Path and From / To remain opaque.";
+                    : "Other objects: " + percentage + " transparency. Path and From / To remain opaque.";
             }
             catch (OperationCanceledException) { if (!IsDisposed) status.Text = "Transparency cancelled."; }
             catch (Exception e) { if (!IsDisposed) status.Text = "Could not apply transparency: " + e.Message; }
@@ -511,9 +522,11 @@ namespace AddinRibbon.Ctr
             add.Enabled = remove.Enabled = calculate.Enabled = reverse.Enabled = !busy;
             from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = secondaryDistance.Enabled = verticalApproach.Enabled = rules.Enabled = !busy;
             connectionSpare.Enabled = secondaryLength.Enabled = lengthAllowance.Enabled = !busy;
+            backgroundTransparencyPercent.Enabled = !busy;
             cancel.Enabled = busy; show.Enabled = !busy && result != null && result.Success;
             restore.Enabled = !busy && visualization.IsShown;
-            backgroundTransparency.Enabled = !busy && visualization.IsPathSelected && !visualization.HasBackgroundTransparency;
+            backgroundTransparency.Enabled = !busy && visualization.IsPathSelected
+                && visualization.AppliedBackgroundTransparency != (double)backgroundTransparencyPercent.Value / 100.0;
             restoreTransparency.Enabled = !busy && visualization.HasBackgroundTransparency;
         }
         protected override void Dispose(bool disposing)

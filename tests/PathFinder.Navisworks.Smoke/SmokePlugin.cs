@@ -344,7 +344,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                     int changed = Wait(visualization.ApplyBackgroundTransparencyAsync(CancellationToken.None));
                     Assert(changed > 0 && visualization.HasBackgroundTransparency && visualization.IsPathSelected,
                         "Applying background transparency did not retain the selected path.");
-                    AssertBackgroundTransparency(highlighted, 0.70);
+                    AssertBackgroundTransparency(highlighted, 0.75);
                     AssertColorsAndPermanent(shown);
                     Assert(hiddenBefore.All(pair => pair.Key.IsHidden == pair.Value), "Transparency changed native hidden flags.");
                     AssertSelection(path);
@@ -399,7 +399,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                     visualization.Show(document, new[] { path }, from, to);
                     Wait(visualization.ApplyBackgroundTransparencyAsync(CancellationToken.None));
                     Wait(visualization.ApplyBackgroundTransparencyAsync(CancellationToken.None));
-                    AssertBackgroundTransparency(highlighted, 0.70); AssertSelection(path);
+                    AssertBackgroundTransparency(highlighted, 0.75); AssertSelection(path);
                     visualization.Show(document, new[] { path }, to, from);
                     Assert(!visualization.HasBackgroundTransparency, "Showing a new orientation retained the previous background override.");
                     AssertColorsAndPermanent(before.Where(item => !highlighted.Contains(item.Item)).ToList());
@@ -503,9 +503,110 @@ public sealed class PathFinderSmoke : AddInPlugin
                 }
                 Assert(visualization.HasBackgroundTransparency && visualization.IsPathSelected,
                     "Early restore cancellation discarded the saved background state.");
-                AssertBackgroundTransparency(highlighted, 0.70);
+                Assert(visualization.AppliedBackgroundTransparency.HasValue,
+                    "Pre-mutation restore cancellation made the applied percentage unknown.");
+                AssertNear(visualization.AppliedBackgroundTransparency.Value, 0.75);
+                AssertBackgroundTransparency(highlighted, 0.75);
+                var applied = Snapshot(geometry); var mask = Field<object>(visualization, "_background");
+                int resetMutationCallbacks = 0;
+                using (var cancellation = new CancellationTokenSource())
+                    ExpectCancelled(() => Wait(visualization.RestoreBackgroundTransparencyAsync(cancellation.Token, count =>
+                    {
+                        if (count > 0 && BackgroundMutationVisible(applied, highlighted, 0))
+                        { resetMutationCallbacks++; cancellation.Cancel(); }
+                    })));
+                Assert(resetMutationCallbacks > 0, "Restore cancellation did not follow a native reset mutation.");
+                Assert(visualization.HasBackgroundTransparency && !visualization.AppliedBackgroundTransparency.HasValue
+                    && visualization.IsShown && visualization.IsPathSelected,
+                    "Partially reset background lost its retry mask or retained an exact applied percentage.");
+                Assert(ReferenceEquals(mask, Field<object>(visualization, "_background")), "Canceled restore discarded its compact retry mask.");
+                AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
+                int repairCallbacks = 0;
+                Wait(visualization.ApplyBackgroundTransparencyAsync(0.75, CancellationToken.None, count => repairCallbacks++));
+                Assert(repairCallbacks > 0, "Applying the previous percentage after a partial reset incorrectly became a no-op.");
+                Assert(visualization.AppliedBackgroundTransparency.HasValue && ReferenceEquals(mask, Field<object>(visualization, "_background")),
+                    "Repair failed to complete the percentage on the existing background mask.");
+                AssertNear(visualization.AppliedBackgroundTransparency.Value, 0.75);
+                AssertBackgroundTransparency(highlighted, 0.75); AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
                 Wait(visualization.RestoreBackgroundTransparencyAsync(CancellationToken.None));
                 AssertColorsAndPermanent(shown); AssertBackgroundTransparency(highlighted, 0); AssertSelection(path);
+            }
+            AssertResetBackgroundAppearance(before, highlighted); AssertSelection(previous);
+        });
+        Check("selectable_background_percentages_reuse_mask_skip_same_value_and_reject_invalid_values", () =>
+        {
+            var before = Snapshot(geometry);
+            var hidden = allItems.ToDictionary(item => item, item => item.IsHidden);
+            document.CurrentSelection.CopyFrom(new[] { previous });
+            using (var visualization = new PathVisualization())
+            {
+                visualization.Show(document, new[] { path }, from, to);
+                var shown = Snapshot(geometry);
+                Assert(!visualization.AppliedBackgroundTransparency.HasValue, "Shown route reported an applied background percentage.");
+                int groups = Wait(visualization.ApplyBackgroundTransparencyAsync(0.30, CancellationToken.None));
+                Assert(groups > 0 && visualization.HasBackgroundTransparency, "Thirty percent did not activate the background mask.");
+                AssertNear(visualization.AppliedBackgroundTransparency.Value, 0.30);
+                AssertBackgroundTransparency(highlighted, 0.30); AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
+                var mask = Field<object>(visualization, "_background");
+                int callbacks = 0;
+                Assert(Wait(visualization.ApplyBackgroundTransparencyAsync(0.30, CancellationToken.None, count => callbacks++)) == groups,
+                    "Same-value apply changed the affected selection-group count.");
+                Assert(callbacks == 0 && ReferenceEquals(mask, Field<object>(visualization, "_background")),
+                    "Same-value apply performed work or rebuilt the background mask.");
+                foreach (double invalid in new[] { -0.01, 1.01, double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+                {
+                    bool rejected = false;
+                    try { Wait(visualization.ApplyBackgroundTransparencyAsync(invalid, CancellationToken.None)); }
+                    catch (ArgumentOutOfRangeException) { rejected = true; }
+                    Assert(rejected, "Invalid transparency fraction was accepted: " + invalid);
+                }
+                AssertBackgroundTransparency(highlighted, 0.30); AssertNear(visualization.AppliedBackgroundTransparency.Value, 0.30);
+                Assert(Wait(visualization.ApplyBackgroundTransparencyAsync(1.00, CancellationToken.None)) == groups
+                    && ReferenceEquals(mask, Field<object>(visualization, "_background")), "Reapply rebuilt the compact background mask.");
+                AssertNear(visualization.AppliedBackgroundTransparency.Value, 1.00);
+                AssertBackgroundTransparency(highlighted, 1.00); AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
+                Wait(visualization.ApplyBackgroundTransparencyAsync(0, CancellationToken.None));
+                Assert(!visualization.HasBackgroundTransparency && !visualization.AppliedBackgroundTransparency.HasValue
+                    && visualization.IsShown && visualization.IsPathSelected, "Zero percent retained override state or removed the shown path.");
+                AssertBackgroundTransparency(highlighted, 0); AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
+                Assert(hidden.All(pair => pair.Key.IsHidden == pair.Value), "Selectable background values changed hidden flags.");
+            }
+            AssertResetBackgroundAppearance(before, highlighted); AssertSelection(previous);
+        });
+        Check("background_reapply_cancellation_preserves_previous_value_before_mutation_and_resets_after_mutation", () =>
+        {
+            var before = Snapshot(geometry);
+            document.CurrentSelection.CopyFrom(new[] { previous });
+            using (var visualization = new PathVisualization())
+            {
+                visualization.Show(document, new[] { path }, from, to);
+                Wait(visualization.ApplyBackgroundTransparencyAsync(0.30, CancellationToken.None));
+                var shown = Snapshot(geometry); var mask = Field<object>(visualization, "_background");
+                using (var cancellation = new CancellationTokenSource())
+                {
+                    cancellation.Cancel();
+                    ExpectCancelled(() => Wait(visualization.ApplyBackgroundTransparencyAsync(1.00, cancellation.Token)));
+                }
+                using (var cancellation = new CancellationTokenSource())
+                    ExpectCancelled(() => Wait(visualization.ApplyBackgroundTransparencyAsync(1.00, cancellation.Token,
+                        count => { if (count == 0) cancellation.Cancel(); })));
+                Assert(visualization.HasBackgroundTransparency && ReferenceEquals(mask, Field<object>(visualization, "_background")),
+                    "Early reapply cancellation discarded the previous mask.");
+                AssertNear(visualization.AppliedBackgroundTransparency.Value, 0.30);
+                AssertBackgroundTransparency(highlighted, 0.30); AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
+                int mutationCallbacks = 0;
+                using (var cancellation = new CancellationTokenSource())
+                    ExpectCancelled(() => Wait(visualization.ApplyBackgroundTransparencyAsync(1.00, cancellation.Token, count =>
+                    {
+                        if (count > 0 && BackgroundMutationVisible(shown, highlighted, 1.00))
+                        { mutationCallbacks++; cancellation.Cancel(); }
+                    })));
+                Assert(mutationCallbacks > 0, "Reapply cancellation did not follow an actual native transparency mutation.");
+                Assert(!visualization.HasBackgroundTransparency && !visualization.AppliedBackgroundTransparency.HasValue
+                    && visualization.IsShown && visualization.IsPathSelected, "Cancelled mutated reapply retained a percentage or removed the path.");
+                AssertBackgroundTransparency(highlighted, 0); AssertColorsAndPermanent(shown, highlighted); AssertSelection(path);
+                Wait(visualization.ApplyBackgroundTransparencyAsync(0.30, CancellationToken.None));
+                AssertNear(visualization.AppliedBackgroundTransparency.Value, 0.30); AssertBackgroundTransparency(highlighted, 0.30);
             }
             AssertResetBackgroundAppearance(before, highlighted); AssertSelection(previous);
         });
@@ -577,7 +678,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                         "Large-model apply lost the selected path or did not activate the background override.");
                     backgroundValidationPhase = "Apply transparency";
                     WriteBackgroundProgress("before bounded Apply transparency validation", applied, visualization.HasBackgroundTransparency);
-                    AssertBackgroundTransparency(highlighted, 0.70);
+                    AssertBackgroundTransparency(highlighted, 0.75);
                     AssertLargeModelColors(shown, highlighted, "Apply materials");
                     backgroundValidationPhase = "Apply hidden flags and selection";
                     WriteBackgroundProgress("before bounded Apply hidden and selection validation", applied, visualization.HasBackgroundTransparency);
@@ -616,7 +717,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                         WriteBackgroundProgress("after optional cleanup Apply", applied, visualization.HasBackgroundTransparency);
                         backgroundValidationPhase = "Cleanup Apply transparency";
                         WriteBackgroundProgress("before bounded cleanup Apply validation", applied, visualization.HasBackgroundTransparency);
-                        AssertBackgroundTransparency(highlighted, 0.70);
+                        AssertBackgroundTransparency(highlighted, 0.75);
                         AssertLargeModelColors(shown, highlighted, "Cleanup Apply materials"); AssertSelection(path);
                         WriteBackgroundProgress("before synchronous full Restore", applied, visualization.HasBackgroundTransparency);
                         phase.Restart(); visualization.Restore();
@@ -639,6 +740,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                         { "protectedGeometryItems", highlighted.Count },
                         { "transparencyOperationScope", "inverted selection groups covering the model outside the protected route and endpoints" },
                         { "affectedSelectionGroups", applied }, { "applyMilliseconds", applyMilliseconds },
+                        { "requestedTransparencyPercent", 75 },
                         { "restoreMilliseconds", restoreMilliseconds }, { "applyProgressCallbacks", applyCallbacks },
                         { "cleanupApplyMilliseconds", cleanupApplyMilliseconds },
                         { "syncFullRestoreMilliseconds", synchronousFullRestoreMilliseconds },
@@ -718,10 +820,10 @@ public sealed class PathFinderSmoke : AddInPlugin
         foreach (var item in geometry) AssertNear(item.Geometry.ActiveTransparency, highlighted.Contains(item) ? 0 : background);
     }
 
-    private static bool BackgroundMutationVisible(List<Appearance> before, HashSet<ModelItem> highlighted)
+    private static bool BackgroundMutationVisible(List<Appearance> before, HashSet<ModelItem> highlighted, double transparency = 0.75)
     {
-        return before.Where(item => !highlighted.Contains(item.Item) && Math.Abs(item.ActiveTransparency - 0.70) > 0.000001)
-            .Take(64).Any(item => Math.Abs(item.Item.Geometry.ActiveTransparency - 0.70) < 0.000001);
+        return before.Where(item => !highlighted.Contains(item.Item) && Math.Abs(item.ActiveTransparency - transparency) > 0.000001)
+            .Take(64).Any(item => Math.Abs(item.Item.Geometry.ActiveTransparency - transparency) < 0.000001);
     }
 
     private void AssertLargeModelColors(List<Appearance> snapshots, HashSet<ModelItem> protectedGeometry, string phase)
@@ -1251,17 +1353,21 @@ public sealed class PathFinderSmoke : AddInPlugin
             {
                 var apply = Field<Button>(control, "backgroundTransparency");
                 var restoreBackground = Field<Button>(control, "restoreTransparency");
-                Assert(apply.Text == "70% transparency" && restoreBackground.Text == "0% transparency",
+                var percentage = Field<NumericUpDown>(control, "backgroundTransparencyPercent");
+                Assert(apply.Text == "Apply transparency" && restoreBackground.Text == "0% transparency",
                     "Optional transparency actions have different labels.");
+                Assert(percentage.Minimum == 0 && percentage.Maximum == 100 && percentage.Value == 75 && percentage.Increment == 5,
+                    "Background percentage must accept 0 through 100 with default 75 and increment 5.");
+                Assert(percentage.Enabled, "Manual percentage is disabled while idle.");
                 Assert(!apply.Enabled && !restoreBackground.Enabled, "Transparency actions are available without a shown path.");
                 AssertManualMode(control);
                 try
                 {
                     Invoke(control, "StartOperation", "Testing background controls while busy.");
-                    Assert(!apply.Enabled && !restoreBackground.Enabled, "Background actions remain active during an operation.");
+                    Assert(!apply.Enabled && !restoreBackground.Enabled && !percentage.Enabled, "Background controls remain active during an operation.");
                 }
                 finally { Invoke(control, "FinishOperation"); }
-                Assert(!apply.Enabled && !restoreBackground.Enabled, "Finishing an empty operation enabled background actions.");
+                Assert(!apply.Enabled && !restoreBackground.Enabled && percentage.Enabled, "Finishing an empty operation left incorrect background controls.");
             }
         });
         Check("dock_metadata_allows_resize_and_sets_useful_initial_size", () =>
@@ -1582,10 +1688,12 @@ public sealed class PathFinderSmoke : AddInPlugin
                 }
                 foreach (var option in new[] { Field<NumericUpDown>(control, "gap"), Field<NumericUpDown>(control, "secondaryDistance"),
                     Field<NumericUpDown>(control, "connectionSpare"), Field<NumericUpDown>(control, "secondaryLength"),
-                    Field<NumericUpDown>(control, "lengthAllowance") })
+                    Field<NumericUpDown>(control, "lengthAllowance"), Field<NumericUpDown>(control, "backgroundTransparencyPercent") })
                 {
                     page.ScrollControlIntoView(option.Parent);
                     System.Windows.Forms.Application.DoEvents();
+                    if (option == Field<NumericUpDown>(control, "backgroundTransparencyPercent"))
+                        SavePreview(control, "pathfinder-background-percentage-" + host.ClientSize.Width + "x" + host.ClientSize.Height + ".png");
                     Assert(page.ClientRectangle.Contains(BoundsRelativeTo(option, page)), "Path numeric option is clipped after resize.");
                     var label = option.Parent.Controls.OfType<Label>().Single();
                     Assert(page.ClientRectangle.Contains(BoundsRelativeTo(label, page)), "Path numeric option label is clipped after resize.");
@@ -1646,20 +1754,46 @@ public sealed class PathFinderSmoke : AddInPlugin
                 var restoreBackground = Field<Button>(control, "restoreTransparency");
                 string outputBefore = Field<TextBox>(control, "output").Text;
                 int revisionBefore = session.Revision, buildsBefore = session.GeometryBuildCount;
+                var percentage = Field<NumericUpDown>(control, "backgroundTransparencyPercent");
+                Assert(percentage.Value == 75, "Shown UI fixture did not retain the default background percentage.");
                 Assert(apply.Enabled && !restoreBackground.Enabled, "Shown selected path did not enable the optional apply action.");
                 apply.PerformClick(); WaitForUiIdle(control);
                 Assert(visualization.HasBackgroundTransparency && !apply.Enabled && restoreBackground.Enabled,
                     "Apply button did not activate the reversible background state.");
-                AssertBackgroundTransparency(highlighted, 0.70); AssertColorsAndPermanent(shown);
+                AssertBackgroundTransparency(highlighted, 0.75); AssertColorsAndPermanent(shown);
                 AssertSelection(route); AssertOverlayPoints(result.PathPoints);
                 AssertBackgroundUiResult(control, result, revisionBefore, buildsBefore, outputBefore);
+                double previousAlpha = 0.75;
+                foreach (decimal desired in new[] { 30m, 100m, 0m, 75m })
+                {
+                    var mask = Field<object>(visualization, "_background");
+                    percentage.Value = desired; System.Windows.Forms.Application.DoEvents();
+                    Assert(apply.Enabled, "Choosing a different background percentage did not enable manual apply.");
+                    Assert(ReferenceEquals(mask, Field<object>(visualization, "_background")), "Editing the percentage rebuilt or cleared the mask.");
+                    AssertBackgroundTransparency(highlighted, previousAlpha); AssertColorsAndPermanent(shown, highlighted);
+                    AssertSelection(route); AssertOverlayPoints(result.PathPoints);
+                    AssertBackgroundUiResult(control, result, revisionBefore, buildsBefore, outputBefore);
+                    apply.PerformClick(); WaitForUiIdle(control);
+                    previousAlpha = (double)desired / 100.0;
+                    AssertBackgroundTransparency(highlighted, previousAlpha); AssertColorsAndPermanent(shown, highlighted);
+                    Assert(visualization.HasBackgroundTransparency == (desired != 0), "UI apply retained incorrect background override state.");
+                    if (desired != 0)
+                    {
+                        AssertNear(visualization.AppliedBackgroundTransparency.Value, previousAlpha);
+                        Assert(!apply.Enabled && restoreBackground.Enabled, "Same applied percentage remains available or reset is disabled.");
+                    }
+                    else Assert(!visualization.AppliedBackgroundTransparency.HasValue && !restoreBackground.Enabled,
+                        "Applying zero did not clear the background percentage and reset action.");
+                    AssertSelection(route); AssertOverlayPoints(result.PathPoints);
+                    AssertBackgroundUiResult(control, result, revisionBefore, buildsBefore, outputBefore);
+                }
                 try
                 {
                     Invoke(control, "StartOperation", "Testing shown background controls while busy.");
-                    Assert(!apply.Enabled && !restoreBackground.Enabled, "Background buttons remained enabled while busy.");
+                    Assert(!apply.Enabled && !restoreBackground.Enabled && !percentage.Enabled, "Background controls remained enabled while busy.");
                 }
                 finally { Invoke(control, "FinishOperation"); }
-                Assert(!apply.Enabled && restoreBackground.Enabled && visualization.HasBackgroundTransparency,
+                Assert(!apply.Enabled && restoreBackground.Enabled && percentage.Enabled && visualization.HasBackgroundTransparency,
                     "Finishing an unrelated operation lost the applied background state.");
                 document.CurrentSelection.CopyFrom(new[] { other }); System.Windows.Forms.Application.DoEvents();
                 Assert(!visualization.IsPathSelected && !apply.Enabled && restoreBackground.Enabled,
