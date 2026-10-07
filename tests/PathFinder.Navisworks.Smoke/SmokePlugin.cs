@@ -1450,7 +1450,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                 var spare = Field<NumericUpDown>(control, "connectionSpare");
                 var secondary = Field<NumericUpDown>(control, "secondaryLength");
                 var percent = Field<NumericUpDown>(control, "lengthAllowance");
-                Assert(spare.Value == 6m && secondary.Value == 0m && percent.Value == 0m, "Design allowance defaults differ.");
+                Assert(spare.Value == 6m && secondary.Value == 5m && percent.Value == 5m, "Design allowance defaults differ.");
                 var fields = new[] { spare, secondary, percent };
                 foreach (var field in fields)
                 {

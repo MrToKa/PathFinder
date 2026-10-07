@@ -25,8 +25,8 @@ namespace AddinRibbon.Ctr
         private readonly NumericUpDown gap = new NumericUpDown { Minimum = 0.01m, Maximum = 1.30m, DecimalPlaces = 2, Increment = 0.05m, Value = 0.25m, Width = 120 };
         private readonly NumericUpDown secondaryDistance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 0.05m, Value = 2m, Width = 120 };
         private readonly NumericUpDown connectionSpare = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 6m, Width = 120 };
-        private readonly NumericUpDown secondaryLength = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 0m, Width = 120 };
-        private readonly NumericUpDown lengthAllowance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 1m, Value = 0m, Width = 120 };
+        private readonly NumericUpDown secondaryLength = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 5m, Width = 120 };
+        private readonly NumericUpDown lengthAllowance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 1m, Value = 5m, Width = 120 };
         private readonly NumericUpDown backgroundTransparencyPercent = new NumericUpDown { Minimum = 0m, Maximum = 100m, Increment = 5m, Value = 75m, Width = 120 };
         private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
         private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = false };

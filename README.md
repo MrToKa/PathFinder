@@ -1,6 +1,6 @@
 # PathFinder — Navisworks Manage 2027
 
-Two-tab cable routing proof of concept, version 1.1.14, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
+Two-tab cable routing proof of concept, version 1.1.15, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
 
 ## Use
 
@@ -22,8 +22,8 @@ Route labels use the nearest named logical ancestor above Tube, Bend, Branch, El
 
 **Design length** appears as the final output line, rounded upward to a whole metre. The extra fields are:
 - **Spare for connection (m)**: 6.00 m by default, added once per cable.
-- **SECONDARY Length (m)**: 0.00 m by default. At each endpoint marked `/SECONDARY`, this replaces that endpoint's measured approach length. Unmarked approaches retain their measured length. Zero replaces a marked approach with zero metres.
-- **Length increase (%)**: 0.00% by default, applied to the corrected cable length plus connection spare before the final ceiling.
+- **SECONDARY Length (m)**: 5.00 m by default. At each endpoint marked `/SECONDARY`, this replaces that endpoint's measured approach length. Unmarked approaches retain their measured length. Zero replaces a marked approach with zero metres.
+- **Length increase (%)**: 5.00% by default, applied to the corrected cable length plus connection spare before the final ceiling.
 
 For example, a 94.249 m cable with one 2.710 m SECONDARY approach, an entered SECONDARY Length of 5 m, 6 m spare and 10% increase gives `(94.249 - 2.710 + 5 + 6) * 1.10 = 112.7929 m`, so **Design length: 113 m**. These fields update an existing result immediately while keeping its route and displayed geometry. They do not start another route search. Reverse preserves the design length.
 
@@ -59,7 +59,7 @@ Run `scripts/Build.ps1` in PowerShell. It discovers Manage 2027 and Visual Studi
 
 Run `dotnet run --project tests/PathFinder.Routing.Tests -- <optional-local-excel-fixture.json>` for the package-free routing and geometry harness. Version 1.1.10 passes 93 checks including all 327 local Excel tray-code fixtures; without the optional fixture there are 92 checks. The linked production routing code is tested directly, including hierarchy naming, measured straights and circular bends, hollow triangle surfaces, physical gap ordering, numerical precision, local tied contacts, cold/reverse cache invariance, bounded caches, parallel interior attachments, vertical approaches and conservative fallback. A synthetic hierarchy fixture produces `/SECONDARY/5LD04/SECONDARY` at 23.054 m and Design length 39 m, with identical path points, attachments and gaps before and after relabelling. This fixture does not validate the new project's native model. Private fixture data is excluded from the public repository/package.
 
-After installing the matching Release DLL and closing Navisworks, run `scripts/Test-Navisworks.ps1` inside a fresh hidden Manage 2027 instance; it writes local results, pane previews and scene/overlay images without saving the model. Version 1.1.14 passes all 58 native groups using the exact installed Release DLL. The two new groups cover selectable 30%/100%/0%, mask reuse, same-value no-op, invalid fractions and reapply cancellation. Existing checks cover default 75%, manual UI edits, inverse-selection scope, protected appearance, selection gating, cancellation, partial-reset repair, stale-view cleanup and UI lifecycle. The baseline checks include Selection Tree ownership, manual Show/Reverse/Restore, overlay/result invariance and accessible controls at narrow/large pane sizes. Current and historical verification is recorded separately in [validation notes](docs/Validation.md).
+After installing the matching Release DLL and closing Navisworks, run `scripts/Test-Navisworks.ps1` inside a fresh hidden Manage 2027 instance; it writes local results, pane previews and scene/overlay images without saving the model. Version 1.1.15 passes all 58 native groups using the exact installed Release DLL, including SECONDARY Length 5 m and Length increase 5% defaults. Checks cover selectable 30%/100%/0%, mask reuse, same-value no-op, invalid fractions and reapply cancellation, default 75%, manual UI edits, inverse-selection scope, protected appearance, selection gating, cancellation, partial-reset repair, stale-view cleanup and UI lifecycle. The baseline checks include Selection Tree ownership, manual Show/Reverse/Restore, overlay/result invariance and accessible controls at narrow/large pane sizes. Current and historical verification is recorded separately in [validation notes](docs/Validation.md).
 
 Use `scripts/Test-Navisworks.ps1 -Mode background-transparency -ModelPath <local-model> -OutputDirectory <new-directory>` for the separate large-model transparency benchmark. It applies to the whole native inverse mask, but validates colours, opacity and hidden state on 67 deterministic geometry probes and their ancestors, without enumerating or reading every background geometry item. Loading, sample setup and validation are outside the recorded action timings. The standard sample suite checks all 1,084 geometry items. These measurements exclude normal interactive viewport redraw and do not promise a maximum delay on other models.
 
