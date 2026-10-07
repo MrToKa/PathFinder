@@ -42,8 +42,12 @@ if ($builtHash -ne $installedHash) {
     throw 'Installed AddinRibbon.dll differs from the current Release build. Close Navisworks and install the current package before testing; an older registered assembly would invalidate the result.'
 }
 $priorRoamers = @(Get-CimInstance Win32_Process -Filter "Name='Roamer.exe'")
-if ($priorRoamers.Count -ne 0) {
-    throw 'Close all Navisworks sessions before the isolated native test. Existing user sessions are never stopped by this script.'
+$expectedRoamer = [System.IO.Path]::GetFullPath((Join-Path $hostDir 'Roamer.exe'))
+# Other installed years/products, such as Freedom, use the same process name.
+# Keep those sessions untouched; block only this Manage host or an unknown path.
+if (@($priorRoamers | Where-Object { [string]::IsNullOrWhiteSpace($_.ExecutablePath) -or
+    $_.ExecutablePath.Equals($expectedRoamer, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 0) {
+    throw 'Close Navisworks Manage 2027 before the isolated native test. Existing user sessions are never stopped by this script.'
 }
 if ([string]::IsNullOrWhiteSpace($ModelPath)) { $ModelPath = Join-Path $hostDir 'Samples\snowmobile.nwd' }
 $modelFile = [System.IO.Path]::GetFullPath($ModelPath)
@@ -67,7 +71,6 @@ foreach ($argument in $arguments) {
 }
 $argumentLine = ($arguments | ForEach-Object { '"' + $_ + '"' }) -join ' '
 
-$expectedRoamer = [System.IO.Path]::GetFullPath((Join-Path $hostDir 'Roamer.exe'))
 $startedUtc = [DateTime]::UtcNow
 $ownedHosts = New-Object 'System.Collections.Generic.Dictionary[int,datetime]'
 function Record-NewAutomationHosts {

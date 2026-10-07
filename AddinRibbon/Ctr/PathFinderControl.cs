@@ -24,6 +24,9 @@ namespace AddinRibbon.Ctr
         private readonly ComboBox cableType = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
         private readonly NumericUpDown gap = new NumericUpDown { Minimum = 0.01m, Maximum = 1.30m, DecimalPlaces = 2, Increment = 0.05m, Value = 0.25m, Width = 120 };
         private readonly NumericUpDown secondaryDistance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 0.05m, Value = 2m, Width = 120 };
+        private readonly NumericUpDown connectionSpare = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 6m, Width = 120 };
+        private readonly NumericUpDown secondaryLength = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 0m, Width = 120 };
+        private readonly NumericUpDown lengthAllowance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 1m, Value = 0m, Width = 120 };
         private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
         private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = true };
         private readonly ToolTip approachHint = new ToolTip();
@@ -66,8 +69,14 @@ namespace AddinRibbon.Ctr
             gap.ValueChanged += InputChanged;
             secondaryDistance.ValueChanged += SecondaryDistanceChanged;
             verticalApproach.CheckedChanged += InputChanged;
+            connectionSpare.ValueChanged += DesignInputChanged;
+            secondaryLength.ValueChanged += DesignInputChanged;
+            lengthAllowance.ValueChanged += DesignInputChanged;
             approachHint.SetToolTip(verticalApproach, "Prefer the least horizontal offset among approaches no more than Connection gap farther than the shortest 3D approach.");
             approachHint.SetToolTip(gap, "Maximum empty space between measured tray surfaces. Trays without validated surface evidence use approximate centreline distances and are reported for review.");
+            approachHint.SetToolTip(secondaryLength, "Replaces the measured approach at each endpoint marked /SECONDARY. A value of zero includes zero metres for that approach.");
+            approachHint.SetToolTip(connectionSpare, "Total connection spare, added once per cable before the percentage increase.");
+            approachHint.SetToolTip(lengthAllowance, "Percentage applied after the SECONDARY replacements and connection spare, before rounding up to whole metres.");
             add.Click += async (s, e) => await AssignAsync();
             remove.Click += (s, e) => RemoveRules();
             calculate.Click += async (s, e) => await CalculateAsync();
@@ -137,7 +146,7 @@ namespace AddinRibbon.Ctr
         }
         private void BuildPathTab()
         {
-            var page = new TabPage("Path"); var layout = CreateLayout(6);
+            var page = new TabPage("Path"); var layout = CreateLayout(7);
             page.AutoScroll = true;
             layout.Dock = DockStyle.Top;
             output.MinimumSize = new Size(0, 120);
@@ -150,7 +159,7 @@ namespace AddinRibbon.Ctr
                 {
                     // Wrapped options must never consume the result row. On a
                     // small/high-font pane, let the tab scroll its complete form.
-                    int headerHeight = layout.GetRowHeights().Take(5).Sum() + layout.Padding.Vertical;
+                    int headerHeight = layout.GetRowHeights().Take(6).Sum() + layout.Padding.Vertical;
                     int minimumHeight = headerHeight + output.MinimumSize.Height + output.Margin.Vertical;
                     layout.MinimumSize = new Size(0, minimumHeight);
                     layout.Height = Math.Max(page.ClientSize.Height, minimumHeight);
@@ -169,12 +178,28 @@ namespace AddinRibbon.Ctr
             cableType.Items.AddRange(new object[] { "MV", "LV", "Control" }); cableType.SelectedIndex = 1;
             var options = Flow(); options.Controls.AddRange(new Control[] { LabeledOption("Cable type", cableType), LabeledOption("Connection gap (m)", gap), LabeledOption("SECONDARY distance (m)", secondaryDistance) });
             layout.Controls.Add(options, 0, 1);
+            var designOptions = Flow(); designOptions.Controls.AddRange(new Control[] {
+                LabeledOption("Spare for connection (m)", connectionSpare),
+                LabeledOption("SECONDARY Length (m)", secondaryLength),
+                LabeledOption("Length increase (%)", lengthAllowance) });
+            layout.Controls.Add(designOptions, 0, 2);
             var calculationMode = Flow(); calculationMode.Controls.Add(verticalApproach);
-            layout.Controls.Add(calculationMode, 0, 2);
-            var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 3);
+            layout.Controls.Add(calculationMode, 0, 3);
+            var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 4);
             UpdateSecondaryExplanation();
-            layout.Controls.Add(secondaryExplanation, 0, 4);
-            layout.Controls.Add(output, 0, 5); page.Controls.Add(layout); tabs.TabPages.Add(page);
+            layout.Controls.Add(secondaryExplanation, 0, 5);
+            layout.Controls.Add(output, 0, 6); page.Controls.Add(layout); tabs.TabPages.Add(page);
+        }
+
+        private void DesignInputChanged(object sender, EventArgs e)
+        {
+            var field = sender as NumericUpDown;
+            if (field != null)
+            {
+                decimal rounded = decimal.Round(field.Value, 2, MidpointRounding.AwayFromZero);
+                if (field.Value != rounded) { field.Value = rounded; return; }
+            }
+            if (!busy && result != null && result.Success) RenderResult();
         }
 
         private void UpdateSecondaryExplanation()
@@ -315,6 +340,9 @@ namespace AddinRibbon.Ctr
                         + " straight(s) in the selected network use a bounding-box approximation." : "")
                     + (session.FallbackClearances > 0 ? Environment.NewLine + "Connection gap review: "
                         + session.FallbackClearances + " tray(s) in the selected network use approximate centreline gaps." : "")
+                    + Environment.NewLine + Environment.NewLine + "Design length: "
+                        + CableDesignLength.Calculate(result, connectionSpare.Value, secondaryLength.Value, lengthAllowance.Value)
+                            .DesignLengthMeters.ToString("F0") + " m"
                 : result.Message;
             if (output.Parent?.Parent is ScrollableControl page) page.ScrollControlIntoView(output);
         }
@@ -374,6 +402,7 @@ namespace AddinRibbon.Ctr
         {
             add.Enabled = remove.Enabled = calculate.Enabled = reverse.Enabled = !busy;
             from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = secondaryDistance.Enabled = verticalApproach.Enabled = rules.Enabled = !busy;
+            connectionSpare.Enabled = secondaryLength.Enabled = lengthAllowance.Enabled = !busy;
             cancel.Enabled = busy; show.Enabled = !busy && result != null && result.Success;
             restore.Enabled = !busy && visualization.IsShown;
         }

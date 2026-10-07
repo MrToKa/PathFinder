@@ -48,6 +48,7 @@ internal static class Program
             EndpointApproachTests.Run(Run);
             VerifiedPortTests.Run(Run);
             MeshClearanceTests.Run(Run);
+            DesignLengthTests.Run(Run);
             if (args.Length > 0) Run("Excel report tray code fixtures", () => ExcelCodes(args[0]));
             Console.WriteLine("All " + passed + " routing regression checks passed.");
             return 0;

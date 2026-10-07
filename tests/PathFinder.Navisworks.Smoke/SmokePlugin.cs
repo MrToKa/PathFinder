@@ -683,6 +683,31 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(session.Revision == revision, "Disposed control still receives document model events.");
             }
         });
+        Check("design_allowance_fields_defaults_precision_and_busy_state", () =>
+        {
+            using (var control = new PathFinderControl())
+            {
+                var spare = Field<NumericUpDown>(control, "connectionSpare");
+                var secondary = Field<NumericUpDown>(control, "secondaryLength");
+                var percent = Field<NumericUpDown>(control, "lengthAllowance");
+                Assert(spare.Value == 6m && secondary.Value == 0m && percent.Value == 0m, "Design allowance defaults differ.");
+                var fields = new[] { spare, secondary, percent };
+                foreach (var field in fields)
+                {
+                    Assert(field.Minimum == 0m && field.DecimalPlaces == 2, "Design allowance accepts negative or hidden-precision values.");
+                    field.Text = 1.235m.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                    Assert(field.Value == 1.24m, "Typed design allowance did not round to its visible value.");
+                }
+                try
+                {
+                    Invoke(control, "StartOperation", "Testing design field state.");
+                    Assert(fields.All(field => !field.Enabled), "Design allowances remain editable during capture.");
+                }
+                finally { Invoke(control, "FinishOperation"); }
+                Assert(fields.All(field => field.Enabled), "Design allowances did not re-enable after capture.");
+                AssertManualMode(control);
+            }
+        });
         Check("secondary_distance_field_has_default_range_and_busy_state", () =>
         {
             using (var control = new PathFinderControl())
@@ -889,16 +914,24 @@ public sealed class PathFinderSmoke : AddInPlugin
                 foreach (var field in new[] { "calculate", "show", "reverse", "restore", "cancel" })
                 {
                     var button = Field<Button>(control, field);
+                    page.ScrollControlIntoView(button);
+                    System.Windows.Forms.Application.DoEvents();
                     var bounds = BoundsRelativeTo(button, page);
                     Assert(page.ClientRectangle.Contains(bounds), "Path action is clipped after resize: " + button.Text + " " + bounds);
                 }
-                foreach (var option in new[] { Field<NumericUpDown>(control, "gap"), Field<NumericUpDown>(control, "secondaryDistance") })
+                foreach (var option in new[] { Field<NumericUpDown>(control, "gap"), Field<NumericUpDown>(control, "secondaryDistance"),
+                    Field<NumericUpDown>(control, "connectionSpare"), Field<NumericUpDown>(control, "secondaryLength"),
+                    Field<NumericUpDown>(control, "lengthAllowance") })
                 {
+                    page.ScrollControlIntoView(option.Parent);
+                    System.Windows.Forms.Application.DoEvents();
                     Assert(page.ClientRectangle.Contains(BoundsRelativeTo(option, page)), "Path numeric option is clipped after resize.");
                     var label = option.Parent.Controls.OfType<Label>().Single();
                     Assert(page.ClientRectangle.Contains(BoundsRelativeTo(label, page)), "Path numeric option label is clipped after resize.");
                     Assert(BoundsRelativeTo(label.Parent, page).Contains(BoundsRelativeTo(option, page)), "Numeric option escaped its label group.");
                 }
+                page.ScrollControlIntoView(Field<CheckBox>(control, "verticalApproach"));
+                System.Windows.Forms.Application.DoEvents();
                 Assert(page.ClientRectangle.Contains(BoundsRelativeTo(Field<CheckBox>(control, "verticalApproach"), page)),
                     "The equipment-approach checkbox is clipped after native pane resize.");
                 var pathOutput = Field<TextBox>(control, "output");
@@ -1078,7 +1111,20 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(visualization.IsShown, "Show path handler did not apply visualization.");
                 AssertOverlayPoints(result.PathPoints);
                 AssertNear(fromLeaf.Geometry.ActiveTransparency, 0); AssertNear(toLeaf.Geometry.ActiveTransparency, 0);
+                int designBuildCount = session.GeometryBuildCount;
+                Field<NumericUpDown>(control, "secondaryLength").Value = 5m;
+                Field<NumericUpDown>(control, "lengthAllowance").Value = 10m;
+                decimal expectedDesignBase = (decimal)result.LengthMeters
+                    - (result.FromRequiresSecondary ? (decimal)result.FromDistanceMeters : 0m)
+                    - (result.ToRequiresSecondary ? (decimal)result.ToDistanceMeters : 0m)
+                    + (result.FromRequiresSecondary ? 5m : 0m) + (result.ToRequiresSecondary ? 5m : 0m) + 6m;
+                string expectedDesignLine = "Design length: " + decimal.Ceiling(expectedDesignBase * 1.1m).ToString("F0") + " m";
+                Assert(Field<TextBox>(control, "output").Text.EndsWith(expectedDesignLine), "Design length is missing, incorrect or not the final output line.");
+                Assert(ReferenceEquals(result, Field<RouteResult>(control, "result")) && session.GeometryBuildCount == designBuildCount
+                    && !Field<bool>(control, "busy") && visualization.IsShown, "Design allowance edit recalculated or cleared the shown path.");
+                AssertOverlayPoints(result.PathPoints);
                 Invoke(control, "ReversePath");
+                Assert(Field<TextBox>(control, "output").Text.EndsWith(expectedDesignLine), "Reverse changed the design length.");
                 AssertOverlayPoints(result.PathPoints.Reverse().ToArray());
                 AssertUiBasePoints(control, Field<RouteResult>(control, "result"), expectedTo, expectedFrom);
                 Assert(Field<ModelItem>(control, "resolvedFrom").Equals(toLeaf) && Field<ModelItem>(control, "resolvedTo").Equals(fromLeaf), "Reverse did not swap resolved objects.");
