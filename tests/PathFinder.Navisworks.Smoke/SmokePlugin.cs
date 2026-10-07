@@ -220,6 +220,31 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(segments.Count == expected, "Overlap leaves were double counted.");
                 Assert(segments.All(segment => segment.AllowedCategories == CableCategory.Control), "Latest parent rule did not win.");
             });
+            Check("hierarchy_route_labels_flow_through_native_capture_with_selected_root_bounds", () =>
+            {
+                Assert(RouteNameResolver.Resolve(new[] { "Tube /B1", "BRANCH /5LD04/B1", "/5LD04", "/ROUTE_ZONE" }) == "/5LD04",
+                    "Digit-leading logical route failed in the installed Framework assembly.");
+                var segments = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                foreach (var segment in segments)
+                {
+                    var item = session.SegmentItems[segment.Id];
+                    var names = new List<string>();
+                    foreach (var ancestor in item.AncestorsAndSelf)
+                    {
+                        names.Add(ancestor.DisplayName);
+                        if (ancestor.Equals(nested)) break;
+                    }
+                    Assert(segment.RouteCode == RouteNameResolver.Resolve(names), "Native capture did not use the bounded logical hierarchy.");
+                }
+                document.CurrentSelection.CopyFrom(new[] { leaf });
+                using (var bounded = new RoutingSession())
+                {
+                    Wait(bounded.AssignSelectionAsync(CableCategory.LV, CancellationToken.None));
+                    var single = Wait(bounded.CaptureSegmentsAsync(CancellationToken.None));
+                    Assert(single.Count == 1 && single[0].RouteCode == RouteNameResolver.Resolve(new[] { leaf.DisplayName }),
+                        "A selected leaf used names above its assigned root.");
+                }
+            });
             Check("overlapping_leaf_rule_last_assignment_wins", () =>
             {
                 document.CurrentSelection.CopyFrom(new[] { leaf });
