@@ -4,7 +4,7 @@ param(
     [string]$MSBuildPath,
     [string]$ModelPath,
     [string]$OutputDirectory,
-    [ValidateSet('smoke', 'extract-model')][string]$Mode = 'smoke',
+    [ValidateSet('smoke', 'extract-model', 'background-transparency')][string]$Mode = 'smoke',
     [ValidateRange(30, 300)][int]$TimeoutSeconds = 300,
     [switch]$BuildOnly
 )
@@ -63,7 +63,7 @@ $stdoutPath = Join-Path $outputRoot 'runner.stdout.log'
 $stderrPath = Join-Path $outputRoot 'runner.stderr.log'
 if (Test-Path -LiteralPath $resultPath) { throw "Refusing to replace an earlier native result at $resultPath. Choose an empty output directory." }
 $arguments = @($hostDir, $modelFile, $installedAssembly, $smokeAssembly, $resultPath)
-if ($Mode -eq 'extract-model') { $arguments += 'extract-model' }
+if ($Mode -ne 'smoke') { $arguments += $Mode }
 # These are existing Windows file paths, with no embedded quotes or trailing slash.
 # Quote each argument explicitly because Start-Process joins its ArgumentList.
 foreach ($argument in $arguments) {
@@ -115,7 +115,7 @@ try {
     if ($runner.ExitCode -ne 0) { throw "Native runner failed with exit $($runner.ExitCode). Inspect $resultPath and $stderrPath." }
     if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) { throw "Native runner produced no result: $resultPath." }
     $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-    if ($Mode -eq 'smoke') {
+    if ($Mode -ne 'extract-model') {
         $failed = @($result.checks | Where-Object { -not $_.passed })
         if ($failed.Count -gt 0) { throw "Native checks failed: $(($failed.name) -join ', '). Results: $resultPath." }
         Write-Host "Passed $(@($result.checks).Count) actual-host checks. Results and tab previews: $outputRoot."
