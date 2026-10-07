@@ -25,10 +25,11 @@ namespace AddinRibbon.Ctr
         private readonly NumericUpDown gap = new NumericUpDown { Minimum = 0.01m, Maximum = 1.30m, DecimalPlaces = 2, Increment = 0.05m, Value = 0.25m, Width = 120 };
         private readonly NumericUpDown secondaryDistance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 0.05m, Value = 2m, Width = 120 };
         private readonly NumericUpDown connectionSpare = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 6m, Width = 120 };
-        private readonly NumericUpDown secondaryLength = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 0m, Width = 120 };
-        private readonly NumericUpDown lengthAllowance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 1m, Value = 0m, Width = 120 };
+        private readonly NumericUpDown secondaryLength = new NumericUpDown { Minimum = 0m, Maximum = 10000m, DecimalPlaces = 2, Increment = 0.5m, Value = 5m, Width = 120 };
+        private readonly NumericUpDown lengthAllowance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 1m, Value = 5m, Width = 120 };
+        private readonly NumericUpDown backgroundTransparencyPercent = new NumericUpDown { Minimum = 0m, Maximum = 100m, Increment = 5m, Value = 75m, Width = 120 };
         private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
-        private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = true };
+        private readonly CheckBox verticalApproach = new CheckBox { Text = "Prefer vertical equipment approach", Checked = true, AutoSize = false };
         private readonly ToolTip approachHint = new ToolTip();
         private readonly TextBox output = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false };
         private readonly Label status = new Label { Dock = DockStyle.Bottom, AutoSize = false, Height = 45, Padding = new Padding(6), Text = "Manual mode. Add routes, then enter From and To." };
@@ -38,7 +39,10 @@ namespace AddinRibbon.Ctr
         private readonly Button show = MakeButton("Show path");
         private readonly Button reverse = MakeButton("Reverse");
         private readonly Button restore = MakeButton("Restore view");
+        private readonly Button backgroundTransparency = MakeButton("Apply transparency");
+        private readonly Button restoreTransparency = MakeButton("0% transparency");
         private readonly Button cancel = MakeButton("Cancel");
+        private Document selectionDocument;
         private CancellationTokenSource operation;
         private ModelItem pickedFrom, pickedTo, resolvedFrom, resolvedTo;
         private RouteResult result;
@@ -62,6 +66,7 @@ namespace AddinRibbon.Ctr
             Controls.Add(tabs);
             Controls.Add(status);
             session.Changed += SessionChanged;
+            AttachSelectionEvents();
             knownModelRevision = session.ModelRevision;
             from.TextChanged += InputChanged;
             to.TextChanged += InputChanged;
@@ -72,16 +77,27 @@ namespace AddinRibbon.Ctr
             connectionSpare.ValueChanged += DesignInputChanged;
             secondaryLength.ValueChanged += DesignInputChanged;
             lengthAllowance.ValueChanged += DesignInputChanged;
+            backgroundTransparencyPercent.ValueChanged += (s, e) =>
+            {
+                decimal rounded = decimal.Round(backgroundTransparencyPercent.Value, 0, MidpointRounding.AwayFromZero);
+                if (backgroundTransparencyPercent.Value != rounded) { backgroundTransparencyPercent.Value = rounded; return; }
+                UpdateButtons();
+            };
             approachHint.SetToolTip(verticalApproach, "Prefer the least horizontal offset among approaches no more than Connection gap farther than the shortest 3D approach.");
             approachHint.SetToolTip(gap, "Maximum empty space between measured tray surfaces. Trays without validated surface evidence use approximate centreline distances and are reported for review.");
             approachHint.SetToolTip(secondaryLength, "Replaces the measured approach at each endpoint marked /SECONDARY. A value of zero includes zero metres for that approach.");
             approachHint.SetToolTip(connectionSpare, "Total connection spare, added once per cable before the percentage increase.");
             approachHint.SetToolTip(lengthAllowance, "Percentage applied after the SECONDARY replacements and connection spare, before rounding up to whole metres.");
+            approachHint.SetToolTip(backgroundTransparencyPercent, "Transparency of other objects: 0% is opaque, 100% is fully transparent. Change this value, then press Apply transparency.");
+            approachHint.SetToolTip(backgroundTransparency, "After Show path, apply the chosen transparency to other objects. Keep the selected path and From / To opaque.");
+            approachHint.SetToolTip(restoreTransparency, "Set other objects to 0% transparency while keeping the shown path. This does not restore their earlier transparency values.");
             add.Click += async (s, e) => await AssignAsync();
             remove.Click += (s, e) => RemoveRules();
             calculate.Click += async (s, e) => await CalculateAsync();
             show.Click += (s, e) => ShowPath();
             restore.Click += (s, e) => RestoreView();
+            backgroundTransparency.Click += async (s, e) => await ApplyTransparencyAsync();
+            restoreTransparency.Click += async (s, e) => await RestoreTransparencyAsync();
             reverse.Click += (s, e) => ReversePath();
             cancel.Click += (s, e) => operation?.Cancel();
             UpdateButtons();
@@ -100,7 +116,7 @@ namespace AddinRibbon.Ctr
         private static FlowLayoutPanel Flow() { return new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Padding = new Padding(3) }; }
         private static FlowLayoutPanel LabeledOption(string caption, Control input)
         {
-            var pair = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0, 0, 8, 0) };
+            var pair = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = new Padding(0, 0, 8, 0) };
             pair.Controls.Add(new Label { Text = caption, AutoSize = true, Anchor = AnchorStyles.Left });
             pair.Controls.Add(input);
             return pair;
@@ -113,7 +129,20 @@ namespace AddinRibbon.Ctr
             {
                 int width = Math.Max(1, table.ClientSize.Width - table.Padding.Horizontal - 8);
                 foreach (Control child in table.Controls)
+                {
                     if (child is Label || child is FlowLayoutPanel) child.MaximumSize = new Size(width, 0);
+                    var row = child as FlowLayoutPanel;
+                    if (row == null) continue;
+                    foreach (var checkBox in row.Controls.OfType<CheckBox>())
+                        checkBox.MaximumSize = new Size(Math.Max(1, width - row.Padding.Horizontal - checkBox.Margin.Horizontal), 0);
+                    foreach (var pair in row.Controls.OfType<FlowLayoutPanel>())
+                    {
+                        int pairWidth = Math.Max(1, width - row.Padding.Horizontal - pair.Margin.Horizontal);
+                        pair.MaximumSize = new Size(pairWidth, 0);
+                        foreach (var label in pair.Controls.OfType<Label>())
+                            label.MaximumSize = new Size(Math.Max(1, pairWidth - label.Margin.Horizontal), 0);
+                    }
+                }
             };
             for (int i = 0; i < rows - 1; i++) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -122,6 +151,25 @@ namespace AddinRibbon.Ctr
         private void BuildRoutesTab()
         {
             var page = new TabPage("Routes"); var layout = CreateLayout(4);
+            page.AutoScroll = true;
+            layout.Dock = DockStyle.Top;
+            rules.MinimumSize = new Size(0, 120);
+            bool sizingRoutes = false;
+            Action sizeRoutes = () =>
+            {
+                if (sizingRoutes || page.IsDisposed || page.Disposing || layout.IsDisposed || layout.Disposing) return;
+                sizingRoutes = true;
+                try
+                {
+                    int headerHeight = layout.GetRowHeights().Take(3).Sum() + layout.Padding.Vertical;
+                    int minimumHeight = headerHeight + rules.MinimumSize.Height + rules.Margin.Vertical;
+                    layout.MinimumSize = new Size(0, minimumHeight);
+                    layout.Height = Math.Max(page.ClientSize.Height, minimumHeight);
+                }
+                finally { sizingRoutes = false; }
+            };
+            layout.Layout += (s, e) => sizeRoutes();
+            page.SizeChanged += (s, e) => sizeRoutes();
             layout.Controls.Add(new Label { Text = "Select route objects in the Selection Tree, choose allowed cable types, then add them. All deepest geometry children are included.", AutoSize = true, MaximumSize = new Size(900, 0), Dock = DockStyle.Fill }, 0, 0);
             var commands = Flow(); commands.Controls.AddRange(new Control[] { mv, lv, control, add, remove });
             layout.Controls.Add(commands, 0, 1);
@@ -184,8 +232,22 @@ namespace AddinRibbon.Ctr
                 LabeledOption("Length increase (%)", lengthAllowance) });
             layout.Controls.Add(designOptions, 0, 2);
             var calculationMode = Flow(); calculationMode.Controls.Add(verticalApproach);
+            Action sizeApproach = () =>
+            {
+                int width = Math.Max(1, calculationMode.ClientSize.Width - calculationMode.Padding.Horizontal - verticalApproach.Margin.Horizontal);
+                int glyphWidth = SystemInformation.MenuCheckSize.Width + 12;
+                var textSize = TextRenderer.MeasureText(verticalApproach.Text, verticalApproach.Font,
+                    new Size(Math.Max(1, width - glyphWidth), int.MaxValue), TextFormatFlags.WordBreak);
+                // AutoSize checkboxes keep a single-line caption even when MaximumSize
+                // limits their width. Give the wrapped caption enough height explicitly.
+                verticalApproach.Size = new Size(Math.Min(width, textSize.Width + glyphWidth),
+                    Math.Max(verticalApproach.Font.Height + 8, textSize.Height + 8));
+            };
+            calculationMode.SizeChanged += (s, e) => sizeApproach();
+            verticalApproach.FontChanged += (s, e) => sizeApproach();
             layout.Controls.Add(calculationMode, 0, 3);
-            var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 4);
+            var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore,
+                LabeledOption("Transparency (%)", backgroundTransparencyPercent), backgroundTransparency, restoreTransparency, cancel }); layout.Controls.Add(commands, 0, 4);
             UpdateSecondaryExplanation();
             layout.Controls.Add(secondaryExplanation, 0, 5);
             layout.Controls.Add(output, 0, 6); page.Controls.Add(layout); tabs.TabPages.Add(page);
@@ -281,6 +343,7 @@ namespace AddinRibbon.Ctr
         }
         private void SessionChanged(object sender, EventArgs e)
         {
+            AttachSelectionEvents();
             // Assignment commits also raise this event; cancel only pending work on a model/rule change.
             if (busy) operation?.Cancel();
             if (knownModelRevision != session.ModelRevision)
@@ -373,6 +436,62 @@ namespace AddinRibbon.Ctr
             catch (Exception e) { status.Text = "Could not restore view: " + e.Message; }
             UpdateButtons();
         }
+        private async Task ApplyTransparencyAsync()
+        {
+            double transparency = (double)backgroundTransparencyPercent.Value / 100.0;
+            if (busy || !visualization.IsPathSelected || visualization.AppliedBackgroundTransparency == transparency) return;
+            string percentage = backgroundTransparencyPercent.Value.ToString("0") + "%";
+            StartOperation("Preparing " + percentage + " transparency for other objects...");
+            try
+            {
+                int count = await visualization.ApplyBackgroundTransparencyAsync(transparency, operation.Token, countRead =>
+                {
+                    if (!IsDisposed) status.Text = "Applying " + percentage + " transparency to other objects...";
+                });
+                if (!IsDisposed) status.Text = count == 0 ? "No other objects to make transparent."
+                    : "Other objects: " + percentage + " transparency. Path and From / To remain opaque.";
+            }
+            catch (OperationCanceledException) { if (!IsDisposed) status.Text = "Transparency cancelled."; }
+            catch (Exception e) { if (!IsDisposed) status.Text = "Could not apply transparency: " + e.Message; }
+            finally { FinishOperation(); }
+        }
+        private async Task RestoreTransparencyAsync()
+        {
+            if (busy || !visualization.HasBackgroundTransparency) return;
+            StartOperation("Setting other objects to 0% transparency...");
+            try
+            {
+                await visualization.RestoreBackgroundTransparencyAsync(operation.Token, countRestored =>
+                {
+                    if (!IsDisposed) status.Text = "Setting other objects to 0% transparency...";
+                });
+                if (!IsDisposed) status.Text = "Other objects: 0% transparency. The path remains shown.";
+            }
+            catch (OperationCanceledException) { if (!IsDisposed) status.Text = "Transparency reset cancelled. Use 0% transparency to finish."; }
+            catch (Exception e) { if (!IsDisposed) status.Text = "Could not restore transparency: " + e.Message; }
+            finally { FinishOperation(); }
+        }
+        private void AttachSelectionEvents()
+        {
+            var document = session.Document;
+            if (ReferenceEquals(document, selectionDocument)) return;
+            DetachSelectionEvents();
+            selectionDocument = document;
+            if (document != null && !document.IsDisposed) document.CurrentSelection.Changed += SelectionChanged;
+        }
+        private void DetachSelectionEvents()
+        {
+            if (selectionDocument != null)
+            {
+                try { selectionDocument.CurrentSelection.Changed -= SelectionChanged; }
+                catch (ObjectDisposedException) { }
+                selectionDocument = null;
+            }
+        }
+        private void SelectionChanged(object sender, EventArgs e)
+        {
+            if (!IsDisposed) UpdateButtons();
+        }
         private void ReversePath()
         {
             if (busy) return;
@@ -403,14 +522,19 @@ namespace AddinRibbon.Ctr
             add.Enabled = remove.Enabled = calculate.Enabled = reverse.Enabled = !busy;
             from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = secondaryDistance.Enabled = verticalApproach.Enabled = rules.Enabled = !busy;
             connectionSpare.Enabled = secondaryLength.Enabled = lengthAllowance.Enabled = !busy;
+            backgroundTransparencyPercent.Enabled = !busy;
             cancel.Enabled = busy; show.Enabled = !busy && result != null && result.Success;
             restore.Enabled = !busy && visualization.IsShown;
+            backgroundTransparency.Enabled = !busy && visualization.IsPathSelected
+                && visualization.AppliedBackgroundTransparency != (double)backgroundTransparencyPercent.Value / 100.0;
+            restoreTransparency.Enabled = !busy && visualization.HasBackgroundTransparency;
         }
         protected override void Dispose(bool disposing)
         {
             if (disposing)
             {
                 approachHint.Dispose(); operation?.Cancel();
+                DetachSelectionEvents();
                 session.Changed -= SessionChanged; session.Dispose(); RoutePathOverlay.Clear(); visualization.Dispose();
             }
             base.Dispose(disposing);
