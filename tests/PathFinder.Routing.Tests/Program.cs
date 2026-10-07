@@ -27,6 +27,12 @@ internal static class Program
             Run("Parallel overlapping centreline contacts avoid artificial detours", ParallelOverlap);
             Run("Physical bend ports retain all curve vertices and interior object attachment", PhysicalBendPorts);
             Run("Port-only segments retain port projections, gaps and paired curves", PortContacts);
+            Run("One connection gap wins over two shorter gaps and a shorter cable", ConnectionGapCountPreference);
+            Run("Equal connection counts choose the smallest summed gap distance", ConnectionGapDistancePreference);
+            Run("Tied gap count and gap distance choose the shortest cable", ConnectionGapLengthTiebreaker);
+            Run("Continuous contact, tray travel and endpoint legs do not count as gaps", ContinuousConnectionGapMetrics);
+            Run("Connection gap metrics survive Reverse and repeated requests", ConnectionGapRepeatability);
+            Run("Micrometre contact noise remains physical length but not a gap", ConnectionGapNoiseBoundary);
             Run("Category filtering rejects a forbidden bridge", Categories);
             Run("Ordered transitions retain a route re-entry", Reentry);
             Run("Reverse swaps attachments and is an involution", Reversal);
@@ -295,6 +301,183 @@ internal static class Program
             "Two port-only segments crossing at their interiors must not connect.");
     }
 
+    private static TraySegment Port(string id, string code, params RoutePoint[] points)
+    {
+        return new TraySegment(id, code, CableCategory.LV, points, connectionsAtEndsOnly: true);
+    }
+
+    // The two alternatives share only their (0,0) and (10,0) ports. Their gap
+    // ports are separated by five metres in Y, well outside the 0.25 m tolerance.
+    // End-only connections prevent the common polyline interiors from creating
+    // a hybrid route or a shortcut to another branch's gap ports.
+    private static TraySegment[] GapNetwork(params TraySegment[][] branches)
+    {
+        return new[] { Port("00-from", "B001", P(-2), P(0)), Port("99-to", "B002", P(10), P(12)) }
+            .Concat(branches.SelectMany(branch => branch)).ToArray();
+    }
+
+    private static TraySegment[] LongTwoGapBranch(string prefix, double firstGap, double lastGap)
+    {
+        return new[] {
+            Port(prefix + "-first", "B101", P(0), P(0, 5), P(3, 5)),
+            Port(prefix + "-middle", "B102", P(3 + firstGap, 5), P(7, 5)),
+            Port(prefix + "-last", "B103", P(7 + lastGap, 5), P(10, 5), P(10))
+        };
+    }
+
+    private static TraySegment[] ShortTwoGapBranch(string prefix, double firstGap, double lastGap)
+    {
+        return new[] {
+            Port(prefix + "-first", "B201", P(0), P(3)),
+            Port(prefix + "-middle", "B202", P(3 + firstGap), P(7)),
+            Port(prefix + "-last", "B203", P(7 + lastGap), P(10))
+        };
+    }
+
+    private static TraySegment[] LongOneGapBranch()
+    {
+        // IDs deliberately sort after the less desirable two-gap short branch.
+        return new[] {
+            Port("z-one-first", "B111", P(0), P(0, 5), P(3, 5)),
+            Port("z-one-last", "B112", P(3.2, 5), P(10, 5), P(10))
+        };
+    }
+
+    private static RouteResult GapRoute(IEnumerable<TraySegment> trays, RoutePoint? from = null, RoutePoint? to = null)
+    {
+        return Calculator.Calculate(trays, from ?? P(-2), to ?? P(12), CableCategory.LV,
+            new RoutingOptions { ConnectionToleranceMeters = 0.25 });
+    }
+
+    private static void ConnectionGapCountPreference()
+    {
+        var longer = LongOneGapBranch();
+        var shorter = ShortTwoGapBranch("a-two", 0.05, 0.05);
+        var oneOnly = GapRoute(GapNetwork(longer));
+        var twoOnly = GapRoute(GapNetwork(shorter));
+        Assert(oneOnly.Success && twoOnly.Success, "Both isolated alternatives must genuinely connect.");
+        Assert(oneOnly.ConnectionGapCount == 1 && twoOnly.ConnectionGapCount == 2, "The isolated branch gap counts are known independently.");
+        Near(0.2, oneOnly.ConnectionGapLengthMeters, "The one-gap branch crosses its full twenty-centimetre separation.");
+        Near(0.1, twoOnly.ConnectionGapLengthMeters, "The two-gap branch has two five-centimetre separations.");
+        Near(24, oneOnly.LengthMeters, "The one-gap alternative has a five-metre outward and return detour.");
+        Near(14, twoOnly.LengthMeters, "The two-gap alternative follows the shorter straight corridor.");
+        var chosen = GapRoute(GapNetwork(longer, shorter));
+        Assert(chosen.Success && chosen.SegmentIds.Contains("z-one-first") && !chosen.SegmentIds.Any(id => id.StartsWith("a-two")),
+            "One gap must win even when it has a greater total gap distance and a longer cable.");
+        Assert(chosen.ConnectionGapCount == 1, "The preferred path must report its actual one gap.");
+        Near(0.2, chosen.ConnectionGapLengthMeters, "Preferred one-gap distance.");
+        Near(24, chosen.LengthMeters, "Gap-count priority must not secretly retain the shorter cable path.");
+    }
+
+    private static void ConnectionGapDistancePreference()
+    {
+        var lowerTotal = LongTwoGapBranch("z-low-total", 0.05, 0.05);
+        var higherTotal = ShortTwoGapBranch("a-high-total", 0.03, 0.20);
+        var lowOnly = GapRoute(GapNetwork(lowerTotal));
+        var highOnly = GapRoute(GapNetwork(higherTotal));
+        Assert(lowOnly.Success && highOnly.Success && lowOnly.ConnectionGapCount == 2 && highOnly.ConnectionGapCount == 2,
+            "Both alternatives must connect through exactly two actual gaps.");
+        Near(0.1, lowOnly.ConnectionGapLengthMeters, "Two five-centimetre gaps sum to ten centimetres.");
+        Near(0.23, highOnly.ConnectionGapLengthMeters, "The branch with the smallest single gap still has the larger sum.");
+        Near(24, lowOnly.LengthMeters, "Smaller total gaps require the longer tray corridor.");
+        Near(14, highOnly.LengthMeters, "Larger total gaps permit the shorter tray corridor.");
+        var chosen = GapRoute(GapNetwork(lowerTotal, higherTotal));
+        Assert(chosen.Success && chosen.SegmentIds.Contains("z-low-total-middle") && !chosen.SegmentIds.Any(id => id.StartsWith("a-high-total")),
+            "Equal gap counts must compare the sum of all gap distances before cable length or the smallest individual gap.");
+        Assert(chosen.ConnectionGapCount == 2, "Preferred path gap count.");
+        Near(0.1, chosen.ConnectionGapLengthMeters, "Preferred path total gap distance.");
+        Near(24, chosen.LengthMeters, "Smaller total gap distance outranks the shorter cable route.");
+    }
+
+    private static void ConnectionGapLengthTiebreaker()
+    {
+        var longer = LongTwoGapBranch("a-long", 0.05, 0.05);
+        var shorter = ShortTwoGapBranch("z-short", 0.05, 0.05);
+        var longOnly = GapRoute(GapNetwork(longer));
+        var shortOnly = GapRoute(GapNetwork(shorter));
+        Assert(longOnly.Success && shortOnly.Success && longOnly.ConnectionGapCount == shortOnly.ConnectionGapCount,
+            "The alternatives must have matching gap counts.");
+        Assert(longOnly.ConnectionGapLengthMeters == shortOnly.ConnectionGapLengthMeters,
+            "Using identical X gap coordinates makes summed gap distances exactly equal, without a rounding-biased preference.");
+        foreach (var input in new[] { GapNetwork(longer, shorter), GapNetwork(shorter, longer).Reverse().ToArray() })
+        {
+            var chosen = GapRoute(input);
+            Assert(chosen.Success && chosen.SegmentIds.Contains("z-short-middle") && !chosen.SegmentIds.Any(id => id.StartsWith("a-long")),
+                "When both gap objectives tie, the shorter physical cable must win despite worse lexical IDs or input order.");
+            Assert(chosen.ConnectionGapCount == 2, "Tied count must remain two.");
+            Near(0.1, chosen.ConnectionGapLengthMeters, "Tied gap-distance metric.");
+            Near(14, chosen.LengthMeters, "Third objective is total cable length.");
+        }
+    }
+
+    private static void ContinuousConnectionGapMetrics()
+    {
+        var continuous = new[] {
+            T("a", "B301", CableCategory.LV, P(0), P(10)),
+            T("b", "B302", CableCategory.LV, P(5), P(15)),
+            T("c", "B303", CableCategory.LV, P(15), P(15, 10))
+        };
+        var connected = Calculator.Calculate(continuous, P(1), P(15, 9), CableCategory.LV);
+        Assert(connected.Success && connected.ConnectionGapCount == 0, "Overlapping and coincident cross-tray contacts are gap-free.");
+        Near(0, connected.ConnectionGapLengthMeters, "Continuous contact must not report positive gap distance.");
+        Near(23, connected.LengthMeters, "Continuous contacts still preserve physical tray travel.");
+        var longTray = T("long", "B304", CableCategory.LV, P(0), P(1000), P(1000, 1000));
+        var withLegs = Calculator.Calculate(new[] { longTray }, P(0, -3), P(1000, 1003), CableCategory.LV);
+        Assert(withLegs.Success && withLegs.FromRequiresSecondary && withLegs.ToRequiresSecondary, "Both real attachment legs exceed two metres.");
+        Assert(withLegs.ConnectionGapCount == 0 && withLegs.ConnectionGapLengthMeters == 0,
+            "Long along-tray edges and From/To attachment legs never become cross-tray gaps.");
+        Near(2006, withLegs.LengthMeters, "Along-tray travel and attachment legs remain in physical cable length.");
+    }
+
+    private static void ConnectionGapRepeatability()
+    {
+        var trays = GapNetwork(LongOneGapBranch(), ShortTwoGapBranch("a-two", 0.05, 0.05));
+        var from = P(-2, -3); var to = P(12, -1);
+        var baseline = GapRoute(trays, from, to);
+        Assert(baseline.Success && baseline.FromRequiresSecondary && !baseline.ToRequiresSecondary, "The fixture has one secondary attachment leg.");
+        Assert(baseline.ConnectionGapCount == 1, "Only the selected cross-tray gap counts.");
+        Near(0.2, baseline.ConnectionGapLengthMeters, "Attachment distances are excluded from the gap sum.");
+        Near(28, baseline.LengthMeters, "Both attachment lengths remain in the total.");
+        var reverse = baseline.Reverse();
+        Assert(reverse.ConnectionGapCount == baseline.ConnectionGapCount && reverse.ConnectionGapLengthMeters == baseline.ConnectionGapLengthMeters,
+            "Reverse must preserve both gap metrics.");
+        Assert(!reverse.FromRequiresSecondary && reverse.ToRequiresSecondary, "Reverse still swaps endpoint markers.");
+        Near(baseline.LengthMeters, reverse.LengthMeters, "Reverse must preserve physical length.");
+        var twice = reverse.Reverse();
+        Assert(twice.RouteText == baseline.RouteText && twice.ConnectionGapCount == baseline.ConnectionGapCount
+            && twice.ConnectionGapLengthMeters == baseline.ConnectionGapLengthMeters, "Two reversals restore the original route and metrics.");
+        for (int request = 0; request < 4; request++)
+        {
+            var current = GapRoute(request % 2 == 0 ? trays : trays.Reverse().ToArray(), from, to);
+            Assert(current.Success && current.RouteText == baseline.RouteText && current.SegmentIds.SequenceEqual(baseline.SegmentIds),
+                "Repeated requests and input order changes must select the same branch.");
+            Assert(current.ConnectionGapCount == baseline.ConnectionGapCount && current.ConnectionGapLengthMeters == baseline.ConnectionGapLengthMeters,
+                "Gap metrics must not accumulate between requests.");
+            Near(baseline.LengthMeters, current.LengthMeters, "Repeated physical length.");
+        }
+        var recalculatedReverse = GapRoute(trays, to, from);
+        Assert(recalculatedReverse.Success && recalculatedReverse.ConnectionGapCount == baseline.ConnectionGapCount,
+            "A new reversed request must optimize the same actual-gap count.");
+        Near(baseline.ConnectionGapLengthMeters, recalculatedReverse.ConnectionGapLengthMeters, "Recalculated reverse gap sum.");
+        Near(baseline.LengthMeters, recalculatedReverse.LengthMeters, "Recalculated reverse length.");
+    }
+
+    private static void ConnectionGapNoiseBoundary()
+    {
+        Assert(RouteCalculator.ConnectionGapEpsilonMeters == 1e-6, "The documented contact noise threshold must remain one micrometre.");
+        foreach (double noise in new[] { 0.0, 0.5e-6, 1e-6, 2e-6 })
+        {
+            var trays = new[] { Port("a", "B401", P(-1), P(0)), Port("b", "B402", P(noise), P(1 + noise)) };
+            var result = Calculator.Calculate(trays, P(-1), P(1 + noise), CableCategory.LV);
+            Assert(result.Success, result.Message);
+            Assert(result.ConnectionGapCount == (noise > 1e-6 ? 1 : 0), "Only separation strictly over one micrometre counts as a gap: " + noise);
+            Assert(Math.Abs(result.ConnectionGapLengthMeters - (noise > 1e-6 ? noise : 0)) < 1e-12,
+                "Qualifying gap distance must exclude contact noise, including the exact epsilon boundary.");
+            Assert(Math.Abs(result.LengthMeters - (2 + noise)) < 1e-12,
+                "Sub-micrometre noise still contributes its physical length; coarse tolerances must not mask its loss.");
+        }
+    }
+
     private static void ExactContacts()
     {
         // Neither polyline has a regular sample at the true nearest contact.
@@ -374,6 +557,11 @@ internal static class Program
         var zero = T("zero", "B001", CableCategory.LV, P(0), P(0));
         var same = Calculator.Calculate(new[] { zero }, P(0), P(0), CableCategory.LV);
         Assert(same.Success && same.RouteText == "/B001" && same.LengthMeters == 0, "A degenerate leaf must be safe.");
+        var extreme = Calculator.Calculate(new[] { T("range", "B001", CableCategory.LV, P(0), P(1)) },
+            P(1e308), P(0), CableCategory.LV);
+        Assert(!extreme.Success && extreme.Message.Contains("coordinate range"), "Overflowing endpoint distance must fail cleanly.");
+        Assert(extreme.LengthMeters == 0 && extreme.ConnectionGapCount == 0 && extreme.ConnectionGapLengthMeters == 0,
+            "Range failure must keep finite zero result metrics.");
     }
 
     private static void Cancellation()

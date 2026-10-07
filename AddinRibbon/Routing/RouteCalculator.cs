@@ -13,6 +13,12 @@ namespace AddinRibbon.Routing
     /// </summary>
     public sealed class RouteCalculator
     {
+        /// <summary>
+        /// A cross-tray gap of at most one micrometre is treated as numerical contact
+        /// for route preference. Its actual length still contributes to cable length.
+        /// </summary>
+        public const double ConnectionGapEpsilonMeters = 0.000001;
+
         public RouteResult Calculate(IEnumerable<TraySegment> trays, RoutePoint from, RoutePoint to,
             CableCategory category, RoutingOptions options = null,
             CancellationToken cancellationToken = default(CancellationToken))
@@ -44,6 +50,8 @@ namespace AddinRibbon.Routing
 
             Projection first = FindNearest(eligible, from, cancellationToken);
             Projection last = FindNearest(eligible, to, cancellationToken);
+            if (!RoutePoint.IsFinite(first.Distance) || !RoutePoint.IsFinite(last.Distance))
+                return RouteResult.Failure("The endpoint distances are outside the supported coordinate range.");
             var nodes = new List<Node>();
             var pieces = new List<Piece>();
             var segmentNodes = new List<List<int>>();
@@ -106,8 +114,8 @@ namespace AddinRibbon.Routing
                 maxConnections, cancellationToken, out limit))
                 return limit == GraphLimit.Connections ? ConnectionLimitFailure(maxConnections) :
                     limit == GraphLimit.Candidates ? CandidateLimitFailure(maxConnections) : NodeLimitFailure(maxNodes);
-            double graphLength;
-            var path = ShortestPath(nodes, firstNode, lastNode, cancellationToken, out graphLength);
+            PathCost graphCost;
+            var path = ShortestPath(nodes, firstNode, lastNode, cancellationToken, out graphCost);
             if (path == null)
                 return RouteResult.Failure("Nearest From tray " + eligible[first.Segment].RouteCode +
                     " (" + first.Distance.ToString("0.###", CultureInfo.InvariantCulture) + " m from object) and To tray " +
@@ -131,9 +139,12 @@ namespace AddinRibbon.Routing
             }
             AppendPoint(points, to);
             if (toSecondary) codes.Add("/SECONDARY");
+            double totalLength = graphCost.PhysicalLength + first.Distance + last.Distance;
+            if (!RoutePoint.IsFinite(totalLength))
+                return RouteResult.Failure("The total cable length is outside the supported coordinate range.");
             return new RouteResult(true, "Path calculated.", codes, segmentIds, points,
-                graphLength + first.Distance + last.Distance, first.Distance, last.Distance,
-                fromSecondary, toSecondary);
+                totalLength, first.Distance, last.Distance,
+                fromSecondary, toSecondary, graphCost.GapCount, graphCost.GapLength);
         }
 
         private static RouteResult NodeLimitFailure(int maxNodes)
@@ -195,10 +206,11 @@ namespace AddinRibbon.Routing
             return best;
         }
 
-        private static void Connect(List<Node> nodes, int first, int last, double length)
+        private static void Connect(List<Node> nodes, int first, int last, double length, bool isCrossTray = false)
         {
-            nodes[first].Edges.Add(new Edge(last, length));
-            nodes[last].Edges.Add(new Edge(first, length));
+            int gapCount = isCrossTray && length > ConnectionGapEpsilonMeters ? 1 : 0;
+            nodes[first].Edges.Add(new Edge(last, length, gapCount));
+            nodes[last].Edges.Add(new Edge(first, length, gapCount));
         }
 
         private static bool AddNeighbourConnections(List<Node> nodes, List<Piece> pieces,
@@ -381,29 +393,32 @@ namespace AddinRibbon.Routing
         }
 
         private static List<int> ShortestPath(List<Node> nodes, int first, int last,
-            CancellationToken token, out double length)
+            CancellationToken token, out PathCost cost)
         {
-            var distance = Enumerable.Repeat(double.PositiveInfinity, nodes.Count).ToArray();
+            var distance = Enumerable.Repeat(PathCost.Unreachable, nodes.Count).ToArray();
             var previous = Enumerable.Repeat(-1, nodes.Count).ToArray();
             var settled = new bool[nodes.Count];
             var queue = new MinHeap();
-            distance[first] = 0;
-            queue.Add(new QueueEntry(first, 0));
+            distance[first] = new PathCost(0, 0, 0);
+            queue.Add(new QueueEntry(first, distance[first]));
             int visits = 0;
             int relaxations = 0;
             while (queue.Count > 0)
             {
                 if ((++visits & 127) == 0) token.ThrowIfCancellationRequested();
                 var entry = queue.RemoveFirst();
-                if (settled[entry.Node] || entry.Distance > distance[entry.Node]) continue;
+                if (settled[entry.Node] || entry.Cost.CompareTo(distance[entry.Node]) > 0) continue;
                 settled[entry.Node] = true;
                 if (entry.Node == last) break;
                 foreach (var edge in nodes[entry.Node].Edges)
                 {
                     if ((++relaxations & 255) == 0) token.ThrowIfCancellationRequested();
                     if (settled[edge.Node]) continue;
-                    double candidate = entry.Distance + edge.Length;
-                    if (candidate < distance[edge.Node])
+                    var candidate = entry.Cost.Add(edge);
+                    if (!RoutePoint.IsFinite(candidate.GapLength) || !RoutePoint.IsFinite(candidate.PhysicalLength)) continue;
+                    // Strict improvements only: equal-cost zero-length contacts
+                    // must never rewrite predecessors into a cycle.
+                    if (candidate.CompareTo(distance[edge.Node]) < 0)
                     {
                         distance[edge.Node] = candidate;
                         previous[edge.Node] = entry.Node;
@@ -412,8 +427,8 @@ namespace AddinRibbon.Routing
                 }
             }
             token.ThrowIfCancellationRequested();
-            length = distance[last];
-            if (double.IsPositiveInfinity(length)) return null;
+            cost = distance[last];
+            if (cost.GapCount == int.MaxValue) return null;
             var path = new List<int>();
             for (int node = last; node >= 0; node = previous[node]) path.Add(node);
             path.Reverse();
@@ -432,8 +447,9 @@ namespace AddinRibbon.Routing
         private struct Edge
         {
             internal readonly int Node;
+            internal readonly int GapCount;
             internal readonly double Length;
-            internal Edge(int node, double length) { Node = node; Length = length; }
+            internal Edge(int node, double length, int gapCount) { Node = node; Length = length; GapCount = gapCount; }
         }
 
         private struct Vertex
@@ -542,7 +558,7 @@ namespace AddinRibbon.Routing
                 foreach (var connection in crossConnections)
                 {
                     if ((++built & 255) == 0) token.ThrowIfCancellationRequested();
-                    Connect(nodes, connection.First, connection.Last, connection.Length);
+                    Connect(nodes, connection.First, connection.Last, connection.Length, isCrossTray: true);
                 }
                 token.ThrowIfCancellationRequested();
             }
@@ -614,11 +630,34 @@ namespace AddinRibbon.Routing
             }
         }
 
+        // All edge components are non-negative. Their additive lexicographic
+        // order makes Dijkstra valid without an arbitrary scalar gap penalty.
+        private struct PathCost : IComparable<PathCost>
+        {
+            internal static readonly PathCost Unreachable = new PathCost(int.MaxValue, double.PositiveInfinity, double.PositiveInfinity);
+            internal readonly int GapCount;
+            internal readonly double GapLength, PhysicalLength;
+            internal PathCost(int gapCount, double gapLength, double physicalLength)
+            { GapCount = gapCount; GapLength = gapLength; PhysicalLength = physicalLength; }
+            internal PathCost Add(Edge edge)
+            {
+                return new PathCost(GapCount + edge.GapCount,
+                    GapLength + (edge.GapCount == 0 ? 0 : edge.Length), PhysicalLength + edge.Length);
+            }
+            public int CompareTo(PathCost other)
+            {
+                int count = GapCount.CompareTo(other.GapCount);
+                if (count != 0) return count;
+                int gaps = GapLength.CompareTo(other.GapLength);
+                return gaps != 0 ? gaps : PhysicalLength.CompareTo(other.PhysicalLength);
+            }
+        }
+
         private struct QueueEntry
         {
             internal readonly int Node;
-            internal readonly double Distance;
-            internal QueueEntry(int node, double distance) { Node = node; Distance = distance; }
+            internal readonly PathCost Cost;
+            internal QueueEntry(int node, PathCost cost) { Node = node; Cost = cost; }
         }
 
         // Kept local for .NET Framework compatibility; no host-side queue or graph state is reused.
@@ -628,8 +667,8 @@ namespace AddinRibbon.Routing
             internal int Count { get { return entries.Count; } }
             private static bool Before(QueueEntry first, QueueEntry second)
             {
-                return first.Distance < second.Distance ||
-                    (first.Distance == second.Distance && first.Node < second.Node);
+                int order = first.Cost.CompareTo(second.Cost);
+                return order < 0 || (order == 0 && first.Node < second.Node);
             }
             internal void Add(QueueEntry entry)
             {

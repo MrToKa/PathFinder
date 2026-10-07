@@ -1,6 +1,6 @@
 # PathFinder — Navisworks Manage 2027
 
-Two-tab cable routing proof of concept, version 1.1.4, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
+Two-tab cable routing proof of concept, version 1.1.5, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
 
 ## Use
 
@@ -29,6 +29,8 @@ Native mesh reads are restricted to identified bends, with primitive/fragment li
 An AABB tree finds candidate polyline pieces; connections use their analytical closest contacts. The sparse graph contains original polyline vertices, endpoint projections and contacts, without regular sample points. Validated bends connect to other trays only through their two physical ports, preserving the curve at larger connection tolerances; equipment endpoints may still project to the curve's interior. Collinear overlaps connect at both overlap boundaries. A 10 m + 10 m perpendicular pair retains its full 20 m length at both 0.25 m and 1.30 m tolerance. Node limits count actual graph vertices rather than samples per metre.
 
 Neighbouring pieces connect within the chosen **Connection gap (m)**: 0.25 m by default, adjustable from 0.01 to 1.30 m. A larger gap may connect nearby parallel trays; proximity does not prove a physical connector. Disconnected nearest eligible trays produce a no-path result with their codes, attachment distances and chosen tolerance. Forbidden cable categories are excluded before both endpoint attachment and graph construction.
+
+Path selection first minimises the **number of connection gaps between trays**, then their **summed length**, then the **total cable length**. These priorities are compared separately, so one fewer gap wins even if the cable route is longer. Continuous travel within a tray and touching/intersecting trays do not count as gaps. Cross-tray distances up to 0.000001 m are treated as numerical contact noise for the gap priorities; their physical length remains included in the cable length. From/To attachment legs, including SECONDARY, are measured separately and do not count as inter-tray gaps. The result shows the selected gap count and their total length; Reverse preserves both.
 
 Lengths remain approximate. Arbitrarily rotated straights, other bend angles, non-planar curves, tees and complex fittings need a geometry review; supported quarter arcs are inferred from mesh ports rather than extracted CAD curves. Equipment attachments use the centre of its visible bounding box. `/SECONDARY` is a textual attachment marker and does not create model geometry. Cached paths are checked against both current bounds and active transforms before Show, including rotations that leave the bounding box unchanged.
 

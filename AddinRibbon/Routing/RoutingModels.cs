@@ -116,10 +116,21 @@ namespace AddinRibbon.Routing
         public double ToDistanceMeters { get; private set; }
         public bool FromRequiresSecondary { get; private set; }
         public bool ToRequiresSecondary { get; private set; }
+        /// <summary>Cross-tray gaps greater than RouteCalculator.ConnectionGapEpsilonMeters; excludes equipment attachment legs.</summary>
+        public int ConnectionGapCount { get; private set; }
+        /// <summary>Sum of the qualifying cross-tray gaps, already included in LengthMeters.</summary>
+        public double ConnectionGapLengthMeters { get; private set; }
 
         internal RouteResult(bool success, string message, IEnumerable<string> codes,
             IEnumerable<string> ids, IEnumerable<RoutePoint> points, double length,
             double fromDistance, double toDistance, bool fromSecondary, bool toSecondary)
+            : this(success, message, codes, ids, points, length, fromDistance, toDistance,
+                fromSecondary, toSecondary, 0, 0) { }
+
+        internal RouteResult(bool success, string message, IEnumerable<string> codes,
+            IEnumerable<string> ids, IEnumerable<RoutePoint> points, double length,
+            double fromDistance, double toDistance, bool fromSecondary, bool toSecondary,
+            int connectionGapCount = 0, double connectionGapLengthMeters = 0)
         {
             Success = success;
             Message = message;
@@ -131,6 +142,8 @@ namespace AddinRibbon.Routing
             ToDistanceMeters = toDistance;
             FromRequiresSecondary = fromSecondary;
             ToRequiresSecondary = toSecondary;
+            ConnectionGapCount = connectionGapCount;
+            ConnectionGapLengthMeters = connectionGapLengthMeters;
             RouteText = string.Concat(RouteCodes);
         }
 
@@ -144,7 +157,7 @@ namespace AddinRibbon.Routing
         {
             return new RouteResult(Success, Message, RouteCodes.Reverse(), SegmentIds.Reverse(),
                 PathPoints.Reverse(), LengthMeters, ToDistanceMeters, FromDistanceMeters,
-                ToRequiresSecondary, FromRequiresSecondary);
+                ToRequiresSecondary, FromRequiresSecondary, ConnectionGapCount, ConnectionGapLengthMeters);
         }
     }
 }

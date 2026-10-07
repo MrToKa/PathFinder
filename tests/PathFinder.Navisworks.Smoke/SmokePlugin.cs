@@ -651,6 +651,34 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(!Field<bool>(control, "busy") && threshold.Enabled, "SECONDARY distance was not restored after finishing the operation.");
             }
         });
+        Check("connection_gap_metrics_render_and_reverse_preserve_totals", () =>
+        {
+            var calculated = new RouteCalculator().Calculate(new[]
+            {
+                new TraySegment("gap-ui-first", "/B001", CableCategory.LV,
+                    new[] { new RoutePoint(0, 0, 0), new RoutePoint(1, 0, 0) }),
+                new TraySegment("gap-ui-last", "/B002", CableCategory.LV,
+                    new[] { new RoutePoint(1.15, 0, 0), new RoutePoint(2.15, 0, 0) })
+            }, new RoutePoint(0, 0, 0), new RoutePoint(2.15, 0, 0), CableCategory.LV,
+                new RoutingOptions { ConnectionToleranceMeters = 0.25 });
+            Assert(calculated.Success && calculated.ConnectionGapCount == 1, "Positive-gap UI fixture did not contain exactly one connection gap.");
+            AssertNear(calculated.ConnectionGapLengthMeters, 0.15);
+            using (var control = new PathFinderControl())
+            {
+                // Use a known detached result to exercise the native WinForms
+                // output without depending on accidental sample-model gaps.
+                typeof(PathFinderControl).GetField("result", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .SetValue(control, calculated);
+                Invoke(control, "RenderResult");
+                AssertGapMetricsOutput(control, calculated);
+                Invoke(control, "ReversePath");
+                var reversed = Field<RouteResult>(control, "result");
+                Assert(reversed.ConnectionGapCount == calculated.ConnectionGapCount
+                    && reversed.ConnectionGapLengthMeters == calculated.ConnectionGapLengthMeters, "Reverse changed connection-gap totals.");
+                AssertNear(reversed.LengthMeters, calculated.LengthMeters);
+                AssertGapMetricsOutput(control, reversed);
+            }
+        });
         Check("dock_plugin_registered_loads_and_disposes_its_control", () =>
         {
             var record = NApp.Plugins.FindPlugin("ClDockPanelUpdate.CONN");
@@ -832,6 +860,9 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Wait((Task)Invoke(control, "CalculateAsync"));
                 var result = Field<RouteResult>(control, "result");
                 Assert(result != null && result.Success, "Manual calculation failed while Pause checked: " + Field<TextBox>(control, "output").Text);
+                Assert(result.ConnectionGapCount == 0 && result.ConnectionGapLengthMeters == 0,
+                    "A single native tray counted equipment attachment legs as connection gaps.");
+                AssertGapMetricsOutput(control, result);
                 Assert(Field<Button>(control, "show").Enabled, "Show path was not enabled after successful calculation.");
                 Invoke(control, "ShowPath");
                 var visualization = Field<PathVisualization>(control, "visualization");
@@ -963,6 +994,14 @@ public sealed class PathFinderSmoke : AddInPlugin
             && result.ToRequiresSecondary == (result.ToDistanceMeters > threshold), "SECONDARY markers did not use the selected strict distance threshold.");
         Assert((result.RouteCodes.First() == "/SECONDARY") == result.FromRequiresSecondary
             && (result.RouteCodes.Last() == "/SECONDARY") == result.ToRequiresSecondary, "Textual SECONDARY markers disagree with their endpoint flags.");
+    }
+
+    private static void AssertGapMetricsOutput(PathFinderControl control, RouteResult result)
+    {
+        var lines = Field<TextBox>(control, "output").Lines;
+        Assert(lines.Contains("Connection gaps: " + result.ConnectionGapCount), "Rendered connection-gap count differs from the result.");
+        Assert(lines.Contains("Connection gap length: " + result.ConnectionGapLengthMeters.ToString("F3") + " m"),
+            "Rendered connection-gap length differs from the result.");
     }
 
     private static double DistanceToPolyline(RoutePoint point, IReadOnlyList<RoutePoint> line)

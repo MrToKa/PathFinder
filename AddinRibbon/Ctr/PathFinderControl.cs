@@ -289,6 +289,8 @@ namespace AddinRibbon.Ctr
                 ? result.RouteText + Environment.NewLine + Environment.NewLine + "Approximate length: " + result.LengthMeters.ToString("F3") + " m" + Environment.NewLine
                     + "From to allowed route: " + result.FromDistanceMeters.ToString("F3") + " m" + Environment.NewLine
                     + "To to allowed route: " + result.ToDistanceMeters.ToString("F3") + " m" + Environment.NewLine
+                    + "Connection gaps: " + result.ConnectionGapCount + Environment.NewLine
+                    + "Connection gap length: " + result.ConnectionGapLengthMeters.ToString("F3") + " m" + Environment.NewLine
                     + "Geometry leaves used: " + result.SegmentIds.Distinct().Count()
                     + (session.FallbackBends > 0 ? Environment.NewLine + "Geometry review: " + session.FallbackBends + " bend(s) in the selected network use a straight approximation." : "")
                 : result.Message;
