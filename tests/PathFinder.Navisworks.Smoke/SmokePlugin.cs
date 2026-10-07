@@ -160,13 +160,13 @@ public sealed class PathFinderSmoke : AddInPlugin
             document.Models.OverrideTemporaryTransparency(new[] { path }, 0.25);
             document.Models.SetHidden(new[] { background }, true);
             var before = Snapshot(geometry);
-            Check("show_path_opaque_colored_endpoints_and_route", () =>
+            Check("show_path_opaque_colored_endpoints_and_route_keeps_other_appearance", () =>
             {
                 visualization.Show(document, new[] { path }, from, to);
                 AssertColor(from, 0.10, 0.85, 0.25); AssertColor(to, 1.00, 0.45, 0.05); AssertColor(path, 0.10, 0.65, 1.00);
                 AssertNear(from.Geometry.ActiveTransparency, 0); AssertNear(to.Geometry.ActiveTransparency, 0); AssertNear(path.Geometry.ActiveTransparency, 0);
-                foreach (var item in geometry.Where(item => !item.Equals(from) && !item.Equals(to) && !item.Equals(path)))
-                    AssertNear(item.Geometry.ActiveTransparency, 0.95);
+                AssertAppearance(before.Where(snapshot => !snapshot.Item.Equals(from) && !snapshot.Item.Equals(to)
+                    && !snapshot.Item.Equals(path)).ToList(), true, true);
                 AssertAppearance(before, false, true);
                 Assert(background.IsHidden, "Show path unhid the original hidden item.");
             });
@@ -194,6 +194,35 @@ public sealed class PathFinderSmoke : AddInPlugin
                 AssertAppearance(before, true, true);
             });
             document.Models.SetHidden(new[] { background }, false);
+            Check("unrelated_temporary_appearance_edits_survive_restore_and_dispose", () =>
+            {
+                var saved = Snapshot(new[] { background })[0];
+                try
+                {
+                    visualization.Show(document, new[] { path }, from, to);
+                    using (var color = new Color(0.12, 0.23, 0.34)) document.Models.OverrideTemporaryColor(new[] { background }, color);
+                    document.Models.OverrideTemporaryTransparency(new[] { background }, 0.58);
+                    visualization.Restore();
+                    AssertColor(background, 0.12, 0.23, 0.34); AssertNear(background.Geometry.ActiveTransparency, 0.58);
+                    using (var disposable = new PathVisualization())
+                    {
+                        disposable.Show(document, new[] { path }, from, to);
+                        AssertColor(background, 0.12, 0.23, 0.34); AssertNear(background.Geometry.ActiveTransparency, 0.58);
+                        document.Models.OverrideTemporaryTransparency(new[] { background }, 0.67);
+                    }
+                    AssertColor(background, 0.12, 0.23, 0.34); AssertNear(background.Geometry.ActiveTransparency, 0.67);
+                }
+                finally
+                {
+                    visualization.Restore();
+                    document.Models.ResetTemporaryMaterials(new[] { background });
+                    if (!saved.ActiveColor.SequenceEqual(saved.PermanentColor))
+                        using (var color = new Color(saved.ActiveColor[0], saved.ActiveColor[1], saved.ActiveColor[2]))
+                            document.Models.OverrideTemporaryColor(new[] { background }, color);
+                    if (saved.ActiveTransparency != saved.PermanentTransparency)
+                        document.Models.OverrideTemporaryTransparency(new[] { background }, saved.ActiveTransparency);
+                }
+            });
         }
     }
 
@@ -1223,6 +1252,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                     "Native path selection invalidated the result or started a calculation.");
                 AssertOverlayPoints(result.PathPoints);
                 AssertNear(fromLeaf.Geometry.ActiveTransparency, 0); AssertNear(toLeaf.Geometry.ActiveTransparency, 0);
+                AssertAppearance(before.Where(snapshot => !snapshot.Item.Equals(fromLeaf) && !snapshot.Item.Equals(toLeaf)).ToList(), true, true);
                 int designBuildCount = session.GeometryBuildCount;
                 Field<NumericUpDown>(control, "secondaryLength").Value = 5m;
                 Field<NumericUpDown>(control, "lengthAllowance").Value = 10m;

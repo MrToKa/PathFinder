@@ -34,16 +34,12 @@ namespace AddinRibbon.Services
 
             Restore();
 
-            // Resolve all data before the first override, so an invalid endpoint cannot
-            // leave the whole document transparent. These index paths also validate
-            // that the supplied endpoints belong to this document.
+            // Validate document membership before changing appearance or selection.
             document.Models.CreatePathId(from);
             document.Models.CreatePathId(to);
             var route = pathLeaves.Where(item => item != null).Distinct().ToList();
             foreach (var item in route) document.Models.CreatePathId(item);
 
-            var rootItems = document.Models.CreateCollectionFromRootItems();
-            var geometryItems = rootItems.DescendantsAndSelf.Where(item => item.HasGeometry).Distinct().ToList();
             var routeGeometry = GeometryOf(route);
             var fromGeometry = GeometryOf(new[] { from });
             var toGeometry = GeometryOf(new[] { to });
@@ -55,15 +51,14 @@ namespace AddinRibbon.Services
             if (highlighted.Count == 0)
                 throw new InvalidOperationException("The selected objects and path have no displayable geometry.");
 
-            var snapshots = geometryItems.Select(Capture).ToList();
+            var snapshots = highlighted.Select(Capture).ToList();
             _document = document;
             _materials = snapshots;
             _selectionBefore = document.CurrentSelection.SelectedItems.ToList();
             _selectedPath = new HashSet<ModelItem>(route);
             try
             {
-                // Bulk native operations avoid one override call for every model object.
-                document.Models.OverrideTemporaryTransparency(rootItems, 0.95);
+                // Change only the route and endpoints; other objects retain their appearance.
                 document.Models.OverrideTemporaryTransparency(highlighted, 0.0);
                 SetColor(document, routeGeometry, 0.10, 0.65, 1.00);
                 fromGeometry.ExceptWith(commonGeometry);
