@@ -580,6 +580,10 @@ public sealed class PathFinderSmoke : AddInPlugin
                 AssertHostLayout(firstHost, control);
                 firstHost.Size = new System.Drawing.Size(1100, 1400);
                 firstHost.PerformLayout(); AssertHostLayout(firstHost, control);
+                firstHost.Size = new System.Drawing.Size(550, 650);
+                firstHost.PerformLayout();
+                SavePreview(control, "pathfinder-narrow-path-preview.png");
+                AssertHostLayout(firstHost, control);
                 firstHost.Size = new System.Drawing.Size(800, 700);
                 firstHost.PerformLayout(); AssertHostLayout(firstHost, control);
                 control.Dock = DockStyle.None;
@@ -622,6 +626,29 @@ public sealed class PathFinderSmoke : AddInPlugin
                     document.Models.SetModelUnitsAndTransform(model, model.Units, translation, true);
                 System.Windows.Forms.Application.DoEvents();
                 Assert(session.Revision == revision, "Disposed control still receives document model events.");
+            }
+        });
+        Check("secondary_distance_field_has_default_range_and_busy_state", () =>
+        {
+            using (var control = new PathFinderControl())
+            {
+                var threshold = Field<NumericUpDown>(control, "secondaryDistance");
+                Assert(threshold.Value == 2m, "SECONDARY distance does not default to two metres.");
+                Assert(threshold.Minimum == 0m && threshold.Maximum == 1000m && threshold.DecimalPlaces == 2,
+                    "SECONDARY distance range or precision differs from the supported UI contract.");
+                Assert(threshold.Increment == 0.05m && threshold.Enabled, "SECONDARY distance step or initial enabled state differs.");
+                threshold.Text = 1.234m.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                Assert(threshold.Value == 1.23m, "Typed three-decimal threshold retained precision hidden by its display.");
+                threshold.Text = 1.235m.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                Assert(threshold.Value == 1.24m, "Typed threshold did not round its midpoint away from zero.");
+                threshold.Value = 2m;
+                try
+                {
+                    Invoke(control, "StartOperation", "Testing field state during capture.");
+                    Assert(Field<bool>(control, "busy") && !threshold.Enabled, "SECONDARY distance can change while an operation is busy.");
+                }
+                finally { Invoke(control, "FinishOperation"); }
+                Assert(!Field<bool>(control, "busy") && threshold.Enabled, "SECONDARY distance was not restored after finishing the operation.");
             }
         });
         Check("dock_plugin_registered_loads_and_disposes_its_control", () =>
@@ -751,7 +778,17 @@ public sealed class PathFinderSmoke : AddInPlugin
                     var bounds = BoundsRelativeTo(button, page);
                     Assert(page.ClientRectangle.Contains(bounds), "Path action is clipped after resize: " + button.Text + " " + bounds);
                 }
-                Assert(Field<TextBox>(control, "output").Height > 30, "Path output collapsed after native pane resize.");
+                foreach (var option in new[] { Field<NumericUpDown>(control, "gap"), Field<NumericUpDown>(control, "secondaryDistance") })
+                {
+                    Assert(page.ClientRectangle.Contains(BoundsRelativeTo(option, page)), "Path numeric option is clipped after resize.");
+                    var label = option.Parent.Controls.OfType<Label>().Single();
+                    Assert(page.ClientRectangle.Contains(BoundsRelativeTo(label, page)), "Path numeric option label is clipped after resize.");
+                    Assert(BoundsRelativeTo(label.Parent, page).Contains(BoundsRelativeTo(option, page)), "Numeric option escaped its label group.");
+                }
+                var pathOutput = Field<TextBox>(control, "output");
+                Assert(pathOutput.Height > 30, "Path output collapsed after native pane resize: output=" + pathOutput.Size
+                    + ", control=" + control.ClientSize + ", page=" + page.ClientSize + ", layout=" + layout.Size
+                    + ", row heights=" + string.Join(",", layout.GetRowHeights()) + ".");
             }
         }
     }
@@ -831,6 +868,62 @@ public sealed class PathFinderSmoke : AddInPlugin
             Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Disposed control retained the cable overlay.");
             AssertAppearance(before, true, true);
         });
+        Check("secondary_threshold_manual_calculation_pause_invalidation_and_reverse", () =>
+        {
+            var before = Snapshot(geometry);
+            using (var control = new PathFinderControl())
+            {
+                document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Wait((Task)Invoke(control, "AssignAsync"));
+                var session = Field<RoutingSession>(control, "session");
+                var tray = Wait(session.CaptureSegmentsAsync(CancellationToken.None)).Single();
+                // Find an actual off-tray endpoint within a bounded sample subset.
+                var endpoint = leaves.Where(item => !item.Equals(leaves[0]) && RoutingSession.IsVisibleEndpoint(item)).Take(128)
+                    .Select(item => new { Item = item, Distance = DistanceToPolyline(session.CenterInMeters(item), tray.Points) })
+                    .OrderByDescending(item => item.Distance).FirstOrDefault();
+                Assert(endpoint != null && endpoint.Distance > 0.000001 && endpoint.Distance < 1000,
+                    "Sample has no bounded visible endpoint away from the selected tray.");
+                document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Invoke(control, "Pick", true);
+                document.CurrentSelection.CopyFrom(new[] { endpoint.Item }); Invoke(control, "Pick", false);
+                var threshold = Field<NumericUpDown>(control, "secondaryDistance");
+                var pause = Field<CheckBox>(control, "pause");
+                var debounce = Field<System.Windows.Forms.Timer>(control, "debounce");
+                Assert(pause.Checked, "SECONDARY fixture unexpectedly unpaused automatic calculation.");
+                threshold.Value = threshold.Maximum;
+                Wait((Task)Invoke(control, "CalculateAsync"));
+                var high = Field<RouteResult>(control, "result");
+                AssertSecondaryForThreshold(high, (double)threshold.Value);
+                Assert(!high.FromRequiresSecondary && !high.ToRequiresSecondary, "Large selected threshold kept a SECONDARY marker.");
+                Invoke(control, "ShowPath");
+                Assert(Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.IsShownFor(document),
+                    "Threshold invalidation fixture did not start with a displayed path.");
+                threshold.Value = 0m;
+                Assert(Field<RouteResult>(control, "result") == null && !Field<Button>(control, "show").Enabled,
+                    "Changing SECONDARY distance retained the old result.");
+                Assert(!Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
+                    "Changing SECONDARY distance retained the old view or cable overlay.");
+                Assert(!debounce.Enabled && pause.Checked && Field<Button>(control, "calculate").Enabled,
+                    "Paused threshold edit started automatic calculation or blocked manual calculation.");
+                Assert(Field<Label>(control, "secondaryExplanation").Text.Contains(threshold.Value.ToString("F2")),
+                    "SECONDARY explanation did not update with the selected threshold.");
+                Wait((Task)Invoke(control, "CalculateAsync"));
+                var low = Field<RouteResult>(control, "result");
+                AssertSecondaryForThreshold(low, 0);
+                Assert(low.ToRequiresSecondary && low.ToDistanceMeters > 0.000001, "Manual calculation ignored the selected zero threshold.");
+                Invoke(control, "ReversePath");
+                var reversed = Field<RouteResult>(control, "result");
+                Assert(threshold.Value == 0m && reversed.FromRequiresSecondary == low.ToRequiresSecondary
+                    && reversed.ToRequiresSecondary == low.FromRequiresSecondary, "Reverse changed the selected threshold or marker sides.");
+                AssertSecondaryForThreshold(reversed, 0); AssertNear(reversed.LengthMeters, low.LengthMeters);
+                threshold.Value = 1.25m;
+                Wait((Task)Invoke(control, "CalculateAsync"));
+                AssertSecondaryForThreshold(Field<RouteResult>(control, "result"), 1.25);
+                Invoke(control, "ReversePath");
+                Assert(threshold.Value == 1.25m, "Reverse did not retain a custom nonzero SECONDARY distance.");
+                AssertSecondaryForThreshold(Field<RouteResult>(control, "result"), 1.25);
+                Assert(!debounce.Enabled && pause.Checked, "Manual threshold calculations or Reverse enabled the paused timer.");
+            }
+            AssertAppearance(before, true, true);
+        });
         Check("hiding_endpoint_or_tray_clears_ui_result_and_cable_overlay", () =>
         {
             var all = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf.ToList();
@@ -862,6 +955,30 @@ public sealed class PathFinderSmoke : AddInPlugin
 
     private static T Field<T>(object target, string name)
     { return (T)target.GetType().GetField(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(target); }
+
+    private static void AssertSecondaryForThreshold(RouteResult result, double threshold)
+    {
+        Assert(result != null && result.Success, "SECONDARY threshold fixture did not calculate a successful route.");
+        Assert(result.FromRequiresSecondary == (result.FromDistanceMeters > threshold)
+            && result.ToRequiresSecondary == (result.ToDistanceMeters > threshold), "SECONDARY markers did not use the selected strict distance threshold.");
+        Assert((result.RouteCodes.First() == "/SECONDARY") == result.FromRequiresSecondary
+            && (result.RouteCodes.Last() == "/SECONDARY") == result.ToRequiresSecondary, "Textual SECONDARY markers disagree with their endpoint flags.");
+    }
+
+    private static double DistanceToPolyline(RoutePoint point, IReadOnlyList<RoutePoint> line)
+    {
+        double minimum = double.PositiveInfinity;
+        for (int index = 1; index < line.Count; index++)
+        {
+            var first = line[index - 1]; var last = line[index];
+            double x = last.X - first.X, y = last.Y - first.Y, z = last.Z - first.Z;
+            double squared = x * x + y * y + z * z;
+            double fraction = squared == 0 ? 0 : ((point.X - first.X) * x + (point.Y - first.Y) * y + (point.Z - first.Z) * z) / squared;
+            fraction = Math.Max(0, Math.Min(1, fraction));
+            minimum = Math.Min(minimum, point.DistanceTo(new RoutePoint(first.X + x * fraction, first.Y + y * fraction, first.Z + z * fraction)));
+        }
+        return minimum;
+    }
 
     private static object Invoke(object target, string name, params object[] args)
     { return target.GetType().GetMethod(name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(target, args); }

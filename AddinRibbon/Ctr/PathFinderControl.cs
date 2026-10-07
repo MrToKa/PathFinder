@@ -23,6 +23,8 @@ namespace AddinRibbon.Ctr
         private readonly TextBox to = new TextBox { Dock = DockStyle.Fill };
         private readonly ComboBox cableType = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
         private readonly NumericUpDown gap = new NumericUpDown { Minimum = 0.01m, Maximum = 1.30m, DecimalPlaces = 2, Increment = 0.05m, Value = 0.25m, Width = 120 };
+        private readonly NumericUpDown secondaryDistance = new NumericUpDown { Minimum = 0m, Maximum = 1000m, DecimalPlaces = 2, Increment = 0.05m, Value = 2m, Width = 120 };
+        private readonly Label secondaryExplanation = new Label { AutoSize = true, Dock = DockStyle.Fill };
         private readonly CheckBox pause = new CheckBox { Text = "Pause automatic calculation", Checked = true, AutoSize = true };
         private readonly TextBox output = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false };
         private readonly Label status = new Label { Dock = DockStyle.Bottom, AutoSize = false, Height = 45, Padding = new Padding(6), Text = "Manual mode. Add routes, then enter From and To." };
@@ -62,6 +64,7 @@ namespace AddinRibbon.Ctr
             to.TextChanged += InputChanged;
             cableType.SelectedIndexChanged += InputChanged;
             gap.ValueChanged += InputChanged;
+            secondaryDistance.ValueChanged += SecondaryDistanceChanged;
             pause.CheckedChanged += (s, e) => { debounce.Stop(); if (!pause.Checked) ScheduleCalculation(); };
             debounce.Tick += async (s, e) => { debounce.Stop(); if (!pause.Checked) await CalculateAsync(); };
             add.Click += async (s, e) => await AssignAsync();
@@ -85,6 +88,13 @@ namespace AddinRibbon.Ctr
 
         private static Button MakeButton(string text) { return new Button { Text = text, AutoSize = true, Height = 30, Margin = new Padding(3) }; }
         private static FlowLayoutPanel Flow() { return new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = true, Padding = new Padding(3) }; }
+        private static FlowLayoutPanel LabeledOption(string caption, Control input)
+        {
+            var pair = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false, Margin = new Padding(0, 0, 8, 0) };
+            pair.Controls.Add(new Label { Text = caption, AutoSize = true, Anchor = AnchorStyles.Left });
+            pair.Controls.Add(input);
+            return pair;
+        }
         private static TableLayoutPanel CreateLayout(int rows)
         {
             var table = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = rows, Padding = new Padding(8) };
@@ -135,12 +145,28 @@ namespace AddinRibbon.Ctr
             useFrom.Click += (s, e) => Pick(true); useTo.Click += (s, e) => Pick(false);
             layout.Controls.Add(endpoints, 0, 0);
             cableType.Items.AddRange(new object[] { "MV", "LV", "Control" }); cableType.SelectedIndex = 1;
-            var options = Flow(); options.Controls.AddRange(new Control[] { new Label { Text = "Cable type", AutoSize = true }, cableType, new Label { Text = "Connection gap (m)", AutoSize = true }, gap });
+            var options = Flow(); options.Controls.AddRange(new Control[] { LabeledOption("Cable type", cableType), LabeledOption("Connection gap (m)", gap), LabeledOption("SECONDARY distance (m)", secondaryDistance) });
             layout.Controls.Add(options, 0, 1);
             layout.Controls.Add(pause, 0, 2);
             var commands = Flow(); commands.Controls.AddRange(new Control[] { calculate, show, reverse, restore, cancel }); layout.Controls.Add(commands, 0, 3);
-            layout.Controls.Add(new Label { Text = "SECONDARY: endpoint centre is more than 2 m from an allowed route centreline. Lengths are approximate; validated 90° bends follow their curved centreline.", AutoSize = true, Dock = DockStyle.Fill }, 0, 4);
+            UpdateSecondaryExplanation();
+            layout.Controls.Add(secondaryExplanation, 0, 4);
             layout.Controls.Add(output, 0, 5); page.Controls.Add(layout); tabs.TabPages.Add(page);
+        }
+
+        private void UpdateSecondaryExplanation()
+        {
+            secondaryExplanation.Text = "SECONDARY: endpoint centre is farther than " + secondaryDistance.Value.ToString("F2")
+                + " m from an allowed route centreline. Lengths are approximate.";
+        }
+
+        private void SecondaryDistanceChanged(object sender, EventArgs e)
+        {
+            // DecimalPlaces formats text but does not round a manually entered value.
+            decimal rounded = decimal.Round(secondaryDistance.Value, 2, MidpointRounding.AwayFromZero);
+            if (secondaryDistance.Value != rounded) { secondaryDistance.Value = rounded; return; }
+            UpdateSecondaryExplanation();
+            InputChanged(sender, e);
         }
 
         private void RefreshRules()
@@ -242,7 +268,7 @@ namespace AddinRibbon.Ctr
                 var trays = await session.CaptureSegmentsAsync(token);
                 var fromPoint = session.CenterInMeters(fromItem); var toPoint = session.CenterInMeters(toItem);
                 var category = (CableCategory)Enum.Parse(typeof(CableCategory), (string)cableType.SelectedItem);
-                var options = new RoutingOptions { ConnectionToleranceMeters = (double)gap.Value };
+                var options = new RoutingOptions { ConnectionToleranceMeters = (double)gap.Value, SecondaryDistanceMeters = (double)secondaryDistance.Value };
                 status.Text = "Calculating path through " + trays.Count + " geometry leaves...";
                 var calculated = await Task.Run(() => new RouteCalculator().Calculate(trays, fromPoint, toPoint, category, options, token), token);
                 token.ThrowIfCancellationRequested();
@@ -323,7 +349,7 @@ namespace AddinRibbon.Ctr
         private void UpdateButtons()
         {
             add.Enabled = remove.Enabled = calculate.Enabled = reverse.Enabled = !busy;
-            from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = rules.Enabled = !busy;
+            from.Enabled = to.Enabled = cableType.Enabled = gap.Enabled = secondaryDistance.Enabled = rules.Enabled = !busy;
             cancel.Enabled = busy; show.Enabled = !busy && result != null && result.Success;
             restore.Enabled = !busy && visualization.IsShown;
         }

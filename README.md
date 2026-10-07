@@ -1,6 +1,6 @@
 # PathFinder — Navisworks Manage 2027
 
-Two-tab cable routing proof of concept, version 1.1.3, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
+Two-tab cable routing proof of concept, version 1.1.4, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
 
 ## Use
 
@@ -8,7 +8,7 @@ Open a 3D model, then choose **Path Finder → Tool Panel**.
 
 1. On **Routes**, select tray containers or individual tray leaves in the Navisworks Selection Tree. Choose **MV**, **LV**, and/or **Control**, then click **Add / update selection**. Every deepest descendant with geometry is included; selecting a leaf itself also works. The grid shows each selected root, its geometry-leaf count, and editable permissions. A later rule overrides an earlier rule for overlapping leaves. **Remove rule** removes selected grid rows.
 2. On **Path**, enter exact **From** and **To** display names, preserving any initial `=`. Lookup uses only currently visible objects with visible geometry; hidden objects and descendants of hidden parents are skipped. Alternatively select exactly one visible model object and press its **Use selection** button. This resolves multiple visible objects with the same display name and unnamed imported geometry. Choose the cable type and press **Calculate path**.
-3. The result lists route codes in traversal order and estimated length. `/SECONDARY` is inserted at the From and/or To end when the endpoint centre is strictly more than **2 metres** from the closest allowed route centreline. Exactly 2 m does not trigger it.
+3. Set **SECONDARY distance (m)** beside Connection gap (default **2.00 m**, adjustable from **0.00 to 1000.00 m**). The result lists route codes in traversal order and estimated length. `/SECONDARY` is inserted at the From and/or To end when the endpoint centre is strictly farther than this threshold from the closest allowed route centreline. A distance exactly equal to the threshold does not trigger it. Changing the threshold clears the previous result and respects Pause; use Calculate path to refresh it in manual mode.
 4. **Show path** makes From green, To orange, and route geometry blue, all at 0% transparency. Every other model object receives 95% transparency. A yellow world-anchored 3D line displays the calculated cable path, including endpoint attachments; it remains visible over the solids. If From and To overlap, shared geometry is purple. **Restore view** removes the line and restores the previous visible temporary materials. Permanent materials and hidden states are preserved.
 5. **Reverse** swaps From/To and reverses the result, including SECONDARY markers. A displayed path updates its endpoint colours and line direction.
 
