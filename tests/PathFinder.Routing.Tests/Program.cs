@@ -21,6 +21,9 @@ internal static class Program
             Run("Exactly two metres and both secondary markers", SecondaryBoundary);
             Run("Disconnected network does not fabricate a path", Disconnected);
             Run("Exact skew contact between samples at the tolerance boundary", ExactContacts);
+            Run("Right-angle route length follows its joint at both tolerances", RightAngleLength);
+            Run("Known 3D diagonal polyline length and interior junction", DiagonalAndInteriorJunction);
+            Run("Parallel overlapping centreline contacts avoid artificial detours", ParallelOverlap);
             Run("Category filtering rejects a forbidden bridge", Categories);
             Run("Ordered transitions retain a route re-entry", Reentry);
             Run("Reverse swaps attachments and is an involution", Reversal);
@@ -137,6 +140,58 @@ internal static class Program
         trays[1] = T("bridge", "BC001", CableCategory.MV | CableCategory.LV, P(2), P(4));
         var result = Calculator.Calculate(trays, P(0), P(6), CableCategory.MV);
         Assert(result.Success && result.RouteText == "/A001/BC001/A002", "Explicit flags govern eligibility.");
+    }
+
+    private static void RightAngleLength()
+    {
+        var trays = new[] { T("a", "B001", CableCategory.LV, P(-10), P(0)),
+            T("b", "B002", CableCategory.LV, P(0), P(0, 10)) };
+        foreach (double tolerance in new[] { 0.25, 1.30 })
+        {
+            var result = Calculator.Calculate(trays, P(-10), P(0, 10), CableCategory.LV,
+                new RoutingOptions { ConnectionToleranceMeters = tolerance });
+            Assert(result.Success, result.Message);
+            Near(20, result.LengthMeters, "Nearby samples must not shortcut the right-angle joint.");
+            Assert(result.PathPoints.Any(point => point.DistanceTo(P(0)) == 0), "The route must pass through its true joint.");
+        }
+    }
+
+    private static void DiagonalAndInteriorJunction()
+    {
+        var trays = new[] { T("a", "B001", CableCategory.LV, P(0), P(3, 3, 3)),
+            T("b", "BC001", CableCategory.LV, P(3, 3, 3), P(6, 6, 3)) };
+        double expected = 3 * Math.Sqrt(3) + 3 * Math.Sqrt(2);
+        var result = Calculator.Calculate(trays, P(0), P(6, 6, 3), CableCategory.LV,
+            new RoutingOptions { ConnectionToleranceMeters = 1.30 });
+        Assert(result.Success, result.Message);
+        Near(expected, result.LengthMeters, "A 3D diagonal must retain all three coordinates and both legs.");
+        var branch = new[] { T("a", "B001", CableCategory.LV, P(-5), P(5)),
+            T("b", "BC001", CableCategory.LV, P(0), P(0, 5)) };
+        result = Calculator.Calculate(branch, P(-4), P(0, 4), CableCategory.LV);
+        Assert(result.Success && result.RouteText == "/B001/BC001", "An interior T contact must remain connected.");
+        Near(8, result.LengthMeters, "The route must follow the interior junction.");
+    }
+
+    private static void ParallelOverlap()
+    {
+        foreach (bool reverseFirst in new[] { false, true })
+        foreach (bool reverseLast in new[] { false, true })
+        {
+            var first = T("a", "B001", CableCategory.LV,
+                reverseFirst ? P(10) : P(0), reverseFirst ? P(0) : P(10));
+            var last = T("b", "B002", CableCategory.LV,
+                reverseLast ? P(15) : P(5), reverseLast ? P(5) : P(15));
+            var result = Calculator.Calculate(new[] { first, last }, P(9), P(14), CableCategory.LV);
+            Assert(result.Success, result.Message);
+            Near(5, result.LengthMeters, "Overlap must not force a trip to only its starting boundary.");
+            var reversed = result.Reverse();
+            Near(5, reversed.LengthMeters, "Overlap reversal must preserve length.");
+        }
+        var diagonal = new[] { T("a", "B001", CableCategory.LV, P(0), P(10, 10, 10)),
+            T("b", "B002", CableCategory.LV, P(5, 5, 5), P(15, 15, 15)) };
+        var diagonalResult = Calculator.Calculate(diagonal, P(9, 9, 9), P(14, 14, 14), CableCategory.LV);
+        Assert(diagonalResult.Success, diagonalResult.Message);
+        Near(5 * Math.Sqrt(3), diagonalResult.LengthMeters, "Rotated overlap must retain the true centreline length.");
     }
 
     private static void ExactContacts()
@@ -257,7 +312,7 @@ internal static class Program
         var timer = Stopwatch.StartNew();
         var result = Calculator.Calculate(MakeGrid(45), P(0), P(44, 44), CableCategory.LV);
         Assert(result.Success, result.Message);
-        Assert(result.LengthMeters > 62 && result.LengthMeters <= 88, "Grid length must be physically plausible.");
+        Near(88, result.LengthMeters, "An orthogonal grid must follow its centreline junctions without cutting corners.");
         Assert(timer.ElapsedMilliseconds < 30000, "Grid routing exceeded 30 seconds.");
         Console.WriteLine("  90 polylines / approximately 31,770 samples; " + result.LengthMeters.ToString("0.000") + " m path.");
     }

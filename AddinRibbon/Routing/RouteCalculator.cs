@@ -6,8 +6,9 @@ using System.Threading;
 namespace AddinRibbon.Routing
 {
     /// <summary>
-    /// Builds a fresh graph of detached tray polylines. Neighbour connections never
-    /// exceed the supplied tolerance; disconnected networks remain disconnected.
+    /// Builds a fresh graph of detached tray polylines. Samples discover nearby
+    /// pieces; cross-tray edges join analytical closest contacts only, so arbitrary
+    /// nearby samples cannot shortcut a bend. Disconnected networks remain disconnected.
     /// </summary>
     public sealed class RouteCalculator
     {
@@ -221,29 +222,25 @@ namespace AddinRibbon.Routing
                         if ((++comparisons & 255) == 0) token.ThrowIfCancellationRequested();
                         var candidate = nodes[candidateIndex];
                         if (candidate.Segment == node.Segment) continue;
-                        double distance = node.Point.DistanceTo(candidate.Point);
-                        if (distance <= tolerance &&
-                            !ConnectWithLimit(nodes, candidateIndex, index, distance, ref connections, maxConnections))
-                        { connectionLimitReached = true; return false; }
                         foreach (int firstPiece in node.Pieces)
                         foreach (int lastPiece in candidate.Pieces)
                         {
                             long pair = ((long)Math.Min(firstPiece, lastPiece) << 32) | (uint)Math.Max(firstPiece, lastPiece);
                             if (!checkedPieces.Add(pair)) continue;
-                            double firstFraction, lastFraction;
-                            ClosestPoints(pieces[firstPiece], pieces[lastPiece], out firstFraction, out lastFraction);
-                            var firstPoint = RoutePoint.Interpolate(pieces[firstPiece].Start, pieces[firstPiece].End, firstFraction);
-                            var lastPoint = RoutePoint.Interpolate(pieces[lastPiece].Start, pieces[lastPiece].End, lastFraction);
-                            double contactDistance = firstPoint.DistanceTo(lastPoint);
-                            if (contactDistance > tolerance) continue;
-                            int contactFirst = InsertContact(nodes, segmentNodes, pieces[firstPiece], firstPoint,
-                                firstFraction, maxNodes, ref connections, maxConnections, out connectionLimitReached);
-                            if (contactFirst < 0) return false;
-                            int contactLast = InsertContact(nodes, segmentNodes, pieces[lastPiece], lastPoint,
-                                lastFraction, maxNodes, ref connections, maxConnections, out connectionLimitReached);
-                            if (contactFirst < 0 || contactLast < 0) return false;
-                            if (!ConnectWithLimit(nodes, contactFirst, contactLast, contactDistance, ref connections, maxConnections))
-                            { connectionLimitReached = true; return false; }
+                            double firstFraction, lastFraction, secondFirstFraction, secondLastFraction;
+                            bool overlap = ParallelContactRange(pieces[firstPiece], pieces[lastPiece],
+                                out firstFraction, out lastFraction, out secondFirstFraction, out secondLastFraction);
+                            if (!overlap) ClosestPoints(pieces[firstPiece], pieces[lastPiece], out firstFraction, out lastFraction);
+                            if (!AddExactContact(nodes, segmentNodes, pieces[firstPiece], pieces[lastPiece],
+                                firstFraction, lastFraction, tolerance, maxNodes, ref connections,
+                                maxConnections, out connectionLimitReached)) return false;
+                            // Parallel overlap has infinitely many closest points.
+                            // Both boundaries retain continuous travel without picking
+                            // an arbitrary sample or forcing a detour to one overlap end.
+                            if (overlap && secondFirstFraction != firstFraction &&
+                                !AddExactContact(nodes, segmentNodes, pieces[firstPiece], pieces[lastPiece],
+                                    secondFirstFraction, secondLastFraction, tolerance, maxNodes,
+                                    ref connections, maxConnections, out connectionLimitReached)) return false;
                         }
                     }
                 }
@@ -255,6 +252,52 @@ namespace AddinRibbon.Routing
                 }
                 bucket.Add(index);
             }
+            return true;
+        }
+
+        private static bool AddExactContact(List<Node> nodes, List<List<int>> segmentNodes,
+            Piece first, Piece last, double firstFraction, double lastFraction,
+            double tolerance, int maxNodes, ref int connections, int maxConnections,
+            out bool connectionLimitReached)
+        {
+            connectionLimitReached = false;
+            var firstPoint = RoutePoint.Interpolate(first.Start, first.End, firstFraction);
+            var lastPoint = RoutePoint.Interpolate(last.Start, last.End, lastFraction);
+            double distance = firstPoint.DistanceTo(lastPoint);
+            if (distance > tolerance) return true;
+            int firstNode = InsertContact(nodes, segmentNodes, first, firstPoint,
+                firstFraction, maxNodes, ref connections, maxConnections, out connectionLimitReached);
+            if (firstNode < 0) return false;
+            int lastNode = InsertContact(nodes, segmentNodes, last, lastPoint,
+                lastFraction, maxNodes, ref connections, maxConnections, out connectionLimitReached);
+            if (lastNode < 0) return false;
+            if (ConnectWithLimit(nodes, firstNode, lastNode, distance, ref connections, maxConnections)) return true;
+            connectionLimitReached = true;
+            return false;
+        }
+
+        private static bool ParallelContactRange(Piece first, Piece last,
+            out double lowFirst, out double lowLast, out double highFirst, out double highLast)
+        {
+            lowFirst = lowLast = highFirst = highLast = 0;
+            double ax = first.End.X - first.Start.X, ay = first.End.Y - first.Start.Y, az = first.End.Z - first.Start.Z;
+            double bx = last.End.X - last.Start.X, by = last.End.Y - last.Start.Y, bz = last.End.Z - last.Start.Z;
+            double a = ax * ax + ay * ay + az * az;
+            double b = bx * bx + by * by + bz * bz;
+            if (a == 0 || b == 0) return false;
+            double cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+            // Only numerical representations of parallel directions qualify; a
+            // shallow real intersection still uses its unique analytical contact.
+            if (cx * cx + cy * cy + cz * cz > a * b * 1e-24) return false;
+            double rx = last.Start.X - first.Start.X, ry = last.Start.Y - first.Start.Y, rz = last.Start.Z - first.Start.Z;
+            double start = (rx * ax + ry * ay + rz * az) / a;
+            double delta = (ax * bx + ay * by + az * bz) / a;
+            double end = start + delta;
+            lowFirst = Math.Max(0, Math.Min(start, end));
+            highFirst = Math.Min(1, Math.Max(start, end));
+            if (lowFirst > highFirst) return false;
+            lowLast = Clamp((lowFirst - start) / delta);
+            highLast = Clamp((highFirst - start) / delta);
             return true;
         }
 

@@ -18,7 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="ClAddin.cs" /><Compile Include="Ctr\PathFinderControl.cs" /><Compile Include="Routing\*.cs" />
-    <Compile Include="Services\RoutingSession.cs" /><Compile Include="Services\PathVisualization.cs" /><Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="Services\RoutingSession.cs" /><Compile Include="Services\PathVisualization.cs" /><Compile Include="Services\RoutePathOverlay.cs" /><Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="AddinRibbon.xaml" />
     <Content Include="AddinRibbon.xaml"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>
     <Content Include="logo_16x16.png"><CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory></Content>

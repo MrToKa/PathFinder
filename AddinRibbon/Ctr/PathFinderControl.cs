@@ -44,6 +44,12 @@ namespace AddinRibbon.Ctr
 
         public PathFinderControl()
         {
+            SuspendLayout();
+            Name = "PathFinderControl";
+            AutoScaleDimensions = new SizeF(7F, 15F);
+            AutoScaleMode = AutoScaleMode.Font;
+            AutoSize = false;
+            Size = new Size(620, 650);
             Dock = DockStyle.Fill;
             Font = new Font("Segoe UI", 9);
             BuildRoutesTab();
@@ -66,6 +72,15 @@ namespace AddinRibbon.Ctr
             reverse.Click += (s, e) => ReversePath();
             cancel.Click += (s, e) => operation?.Cancel();
             UpdateButtons();
+            ResumeLayout(true);
+        }
+
+        protected override void OnParentChanged(EventArgs e)
+        {
+            base.OnParentChanged(e);
+            // The native dock host resets Dock while attaching the returned control.
+            // Apply it after attachment so the pane follows the host client area.
+            if (Parent != null && !IsDisposed) Dock = DockStyle.Fill;
         }
 
         private static Button MakeButton(string text) { return new Button { Text = text, AutoSize = true, Height = 30, Margin = new Padding(3) }; }
@@ -264,13 +279,15 @@ namespace AddinRibbon.Ctr
                     return;
                 }
                 visualization.Show(session.Document, result.SegmentIds.Select(id => session.SegmentItems[id]), resolvedFrom, resolvedTo);
-                status.Text = "From: green. To: orange. Path: blue. Everything else: 95% transparency.";
+                RoutePathOverlay.Show(session.Document, result.PathPoints);
+                status.Text = "Cable line: yellow. From: green. To: orange. Trays: blue. Everything else: 95% transparency.";
             }
-            catch (Exception e) { status.Text = e.Message; }
+            catch (Exception e) { RestoreView(); status.Text = e.Message; }
             UpdateButtons();
         }
         private void RestoreView()
         {
+            RoutePathOverlay.Clear();
             try { visualization.Restore(); }
             catch (Exception e) { status.Text = "Could not restore view: " + e.Message; }
             UpdateButtons();
@@ -313,7 +330,7 @@ namespace AddinRibbon.Ctr
             if (disposing)
             {
                 debounce.Stop(); debounce.Dispose(); operation?.Cancel();
-                session.Changed -= SessionChanged; session.Dispose(); visualization.Dispose();
+                session.Changed -= SessionChanged; session.Dispose(); RoutePathOverlay.Clear(); visualization.Dispose();
             }
             base.Dispose(disposing);
         }

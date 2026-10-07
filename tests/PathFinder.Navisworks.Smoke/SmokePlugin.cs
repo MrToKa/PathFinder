@@ -43,6 +43,7 @@ public sealed class PathFinderSmoke : AddInPlugin
             if (leaves.Count < 5) throw new InvalidOperationException("Smoke sample must have at least five geometry leaves.");
             TestVisualization(leaves);
             TestRoutingSession(leaves);
+            TestCableOverlay();
             TestControl();
             TestControlFlow(leaves);
         }
@@ -279,6 +280,47 @@ public sealed class PathFinderSmoke : AddInPlugin
 
     private void TestControl()
     {
+        Check("dock_metadata_allows_resize_and_sets_useful_initial_size", () =>
+        {
+            var record = NApp.Plugins.FindPlugin("ClDockPanelUpdate.CONN") as DockPanePluginRecord;
+            Assert(record != null && record.IsEnabled, "Dock plugin was not registered/enabled.");
+            Assert(!record.FixedSize, "Dock pane still uses the SDK default FixedSize=true.");
+            using (var control = new PathFinderControl())
+            {
+                Assert(control.Width >= 400 && control.Height >= 300, "Initial pane content retained the default 150 by 150 UserControl size.");
+                Assert(control.AutoScaleMode != AutoScaleMode.Inherit, "Root DPI/font scaling still depends on an unspecified native parent.");
+            }
+        });
+        Check("host_docking_reset_and_reparent_resize_content_to_fill", () =>
+        {
+            using (var firstHost = new Panel())
+            using (var secondHost = new Panel())
+            using (var control = new PathFinderControl())
+            {
+                firstHost.Size = new System.Drawing.Size(800, 700);
+                secondHost.Size = new System.Drawing.Size(1100, 1400);
+                // Navisworks resets Dock before assigning the WinForms parent. A
+                // standalone DrawToBitmap(size) check did not exercise this step.
+                control.Dock = DockStyle.None;
+                firstHost.Controls.Add(control);
+                firstHost.CreateControl(); control.CreateControl(); firstHost.PerformLayout();
+                AssertHostLayout(firstHost, control);
+                firstHost.Size = new System.Drawing.Size(1100, 1400);
+                firstHost.PerformLayout(); AssertHostLayout(firstHost, control);
+                firstHost.Size = new System.Drawing.Size(800, 700);
+                firstHost.PerformLayout(); AssertHostLayout(firstHost, control);
+                control.Dock = DockStyle.None;
+                secondHost.Controls.Add(control);
+                secondHost.CreateControl(); secondHost.PerformLayout(); AssertHostLayout(secondHost, control);
+                secondHost.Size = new System.Drawing.Size(800, 700);
+                secondHost.PerformLayout(); AssertHostLayout(secondHost, control);
+                var tabs = ControlsOf(control).OfType<TabControl>().Single();
+                tabs.SelectedIndex = 0; control.PerformLayout();
+                SavePreview(control, "pathfinder-parented-routes-preview.png");
+                tabs.SelectedIndex = 1; control.PerformLayout();
+                SavePreview(control, "pathfinder-parented-path-preview.png");
+            }
+        });
         Check("two_tabs_and_pause_default_allow_manual_calculation", () =>
         {
             using (var control = new PathFinderControl())
@@ -321,6 +363,136 @@ public sealed class PathFinderSmoke : AddInPlugin
         });
     }
 
+    private void TestCableOverlay()
+    {
+        Check("cable_render_plugin_registered_and_loads", () =>
+        {
+            var record = NApp.Plugins.FindPlugin("PathFinderRouteOverlay.CONN") as RenderPluginRecord;
+            Assert(record != null && record.IsEnabled, "Cable-line render plugin is not registered/enabled.");
+            var renderer = record.LoadedPlugin ?? record.LoadPlugin();
+            Assert(renderer is RoutePathOverlay, "Cable-line render plugin loaded the wrong type.");
+        });
+        Check("cable_overlay_converts_metres_to_document_units_and_bounds_all_points", () =>
+        {
+            var input = new[] { new RoutePoint(-1.5, 2.25, 3.5), new RoutePoint(4.5, -5.25, 6.5), new RoutePoint(7.5, 8.25, -9.5) };
+            try
+            {
+                RoutePathOverlay.Show(document, input);
+                AssertOverlayPoints(input);
+                AssertNear(UnitConversion.ScaleFactor(Units.Meters, Units.Millimeters), 1000);
+                AssertNear(UnitConversion.ScaleFactor(Units.Millimeters, Units.Meters), 0.001);
+                var record = (RenderPluginRecord)NApp.Plugins.FindPlugin("PathFinderRouteOverlay.CONN");
+                var renderer = (RoutePathOverlay)record.LoadedPlugin;
+                using (var box = renderer.MakeRenderBoundingBox(document.ActiveView))
+                {
+                    Assert(!box.IsEmpty, "Shown cable has an empty rendering bounding box.");
+                    foreach (var point in RoutePathOverlay.DisplayedPoints)
+                    {
+                        Assert(point.X >= box.Min.X && point.X <= box.Max.X && point.Y >= box.Min.Y && point.Y <= box.Max.Y && point.Z >= box.Min.Z && point.Z <= box.Max.Z,
+                            "Cable rendering bounds exclude a path point.");
+                    }
+                }
+            }
+            finally { RoutePathOverlay.Clear(); }
+            Assert(RoutePathOverlay.DisplayedPoints.Count == 0 && !RoutePathOverlay.IsShownFor(document), "Clear retained displayed cable points.");
+            var loaded = (RoutePathOverlay)((RenderPluginRecord)NApp.Plugins.FindPlugin("PathFinderRouteOverlay.CONN")).LoadedPlugin;
+            using (var box = loaded.MakeRenderBoundingBox(document.ActiveView)) Assert(box.IsEmpty, "Cleared cable retained rendering bounds.");
+        });
+        Check("scene_plus_overlay_image_contains_visible_yellow_cable_line", () =>
+        {
+            using (var box = document.GetBoundingBox(false))
+            {
+                double metres = UnitConversion.ScaleFactor(document.Units, Units.Meters);
+                var first = new RoutePoint((box.Min.X + box.Size.X * 0.1) * metres, (box.Min.Y + box.Size.Y * 0.1) * metres, (box.Min.Z + box.Size.Z * 0.1) * metres);
+                var middle = new RoutePoint((box.Min.X + box.Size.X * 0.9) * metres, (box.Min.Y + box.Size.Y * 0.1) * metres, (box.Min.Z + box.Size.Z * 0.7) * metres);
+                var last = new RoutePoint((box.Min.X + box.Size.X * 0.9) * metres, (box.Min.Y + box.Size.Y * 0.9) * metres, (box.Min.Z + box.Size.Z * 0.9) * metres);
+                RoutePathOverlay.Show(document, new[] { first, middle, last });
+            }
+            try
+            {
+                using (var scene = document.ActiveView.GenerateImage(ImageGenerationStyle.Scene, 480, 360, true))
+                using (var overlay = document.ActiveView.GenerateImage(ImageGenerationStyle.ScenePlusOverlay, 480, 360, true))
+                {
+                    Assert(scene != null && overlay != null, "Host did not generate scene/overlay images.");
+                    scene.Save(Path.Combine(Path.GetDirectoryName(output), "cable-scene.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    overlay.Save(Path.Combine(Path.GetDirectoryName(output), "cable-scene-with-overlay.png"), System.Drawing.Imaging.ImageFormat.Png);
+                    int sceneYellow = YellowPixels(scene), overlayYellow = YellowPixels(overlay);
+                    Assert(overlayYellow > sceneYellow + 3, "Overlay image did not add visible yellow cable pixels: scene=" + sceneYellow + ", overlay=" + overlayYellow);
+                }
+            }
+            finally { RoutePathOverlay.Clear(); }
+        });
+    }
+
+    private static int YellowPixels(System.Drawing.Bitmap image)
+    {
+        int total = 0;
+        for (int y = 0; y < image.Height; y++) for (int x = 0; x < image.Width; x++)
+        {
+            var color = image.GetPixel(x, y);
+            if (color.R > 220 && color.G > 170 && color.B < 80) total++;
+        }
+        return total;
+    }
+
+    private void AssertOverlayPoints(IReadOnlyList<RoutePoint> input)
+    {
+        Assert(RoutePathOverlay.IsShownFor(document), "Shown cable is not active for this document.");
+        var displayed = RoutePathOverlay.DisplayedPoints;
+        Assert(displayed.Count == input.Count, "Displayed cable point count differs from calculated path.");
+        double scale = UnitConversion.ScaleFactor(Units.Meters, document.Units);
+        for (int index = 0; index < input.Count; index++)
+        {
+            AssertNear(displayed[index].X, input[index].X * scale);
+            AssertNear(displayed[index].Y, input[index].Y * scale);
+            AssertNear(displayed[index].Z, input[index].Z * scale);
+        }
+    }
+
+    private static void AssertHostLayout(Panel host, PathFinderControl control)
+    {
+        control.PerformLayout();
+        Assert(control.Dock == DockStyle.Fill, "Attaching the native host left the pane content undocked.");
+        Assert(control.Bounds == host.DisplayRectangle, "Pane content does not fill its parent after resize: " + control.Bounds + " vs " + host.DisplayRectangle);
+        var tabs = ControlsOf(control).OfType<TabControl>().Single();
+        Assert(tabs.Width == control.ClientSize.Width && tabs.Height > control.ClientSize.Height / 2,
+            "Tab strip or content retained the tiny default size after parent resize.");
+        for (int index = 0; index < tabs.TabPages.Count; index++)
+        {
+            tabs.SelectedIndex = index; control.PerformLayout(); System.Windows.Forms.Application.DoEvents();
+            var page = tabs.SelectedTab;
+            var layout = page.Controls.OfType<TableLayoutPanel>().Single();
+            Assert(layout.Width >= page.ClientSize.Width - 8, "Selected tab layout did not expand across the native pane.");
+            if (index == 0)
+            {
+                var grid = ControlsOf(page).OfType<DataGridView>().Single();
+                Assert(grid.Width >= page.ClientSize.Width - 40 && grid.Height > 60, "Routes table is clipped or collapsed after resize.");
+            }
+            else
+            {
+                Assert(Field<TextBox>(control, "from").Width >= 100 && Field<TextBox>(control, "to").Width >= 100,
+                    "From or To field collapsed after native pane resize.");
+                foreach (var field in new[] { "calculate", "show", "reverse", "restore", "cancel" })
+                {
+                    var button = Field<Button>(control, field);
+                    var bounds = BoundsRelativeTo(button, page);
+                    Assert(page.ClientRectangle.Contains(bounds), "Path action is clipped after resize: " + button.Text + " " + bounds);
+                }
+                Assert(Field<TextBox>(control, "output").Height > 30, "Path output collapsed after native pane resize.");
+            }
+        }
+    }
+
+    private static System.Drawing.Rectangle BoundsRelativeTo(Control child, Control ancestor)
+    {
+        var location = child.Location;
+        var parent = child.Parent;
+        while (parent != null && !ReferenceEquals(parent, ancestor))
+        { location.Offset(parent.Location); parent = parent.Parent; }
+        Assert(parent != null, "Control is not inside the requested tab.");
+        return new System.Drawing.Rectangle(location, child.Size);
+    }
+
     private void SavePreview(Control control, string name)
     {
         using (var image = new System.Drawing.Bitmap(control.Width, control.Height))
@@ -354,17 +526,36 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Invoke(control, "ShowPath");
                 var visualization = Field<PathVisualization>(control, "visualization");
                 Assert(visualization.IsShown, "Show path handler did not apply visualization.");
+                AssertOverlayPoints(result.PathPoints);
                 AssertNear(leaves[0].Geometry.ActiveTransparency, 0); AssertNear(leaves[1].Geometry.ActiveTransparency, 0);
                 Invoke(control, "ReversePath");
+                AssertOverlayPoints(result.PathPoints.Reverse().ToArray());
                 Assert(Field<ModelItem>(control, "resolvedFrom").Equals(leaves[1]) && Field<ModelItem>(control, "resolvedTo").Equals(leaves[0]), "Reverse did not swap resolved objects.");
                 AssertColor(leaves[1], 0.10, 0.85, 0.25); AssertColor(leaves[0], 1.00, 0.45, 0.05);
                 Invoke(control, "RestoreView"); Assert(!visualization.IsShown, "Restore handler left visualization active.");
+                Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Restore handler left the cable overlay active.");
                 AssertAppearance(before, true, true);
+                Invoke(control, "ShowPath"); Assert(RoutePathOverlay.IsShownFor(document), "Restored result could not be shown again.");
                 Field<TextBox>(control, "from").Text = "PF_SMOKE_MISSING_EDIT";
                 Assert(Field<RouteResult>(control, "result") == null, "Changing an endpoint kept the old result.");
+                Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Endpoint edit retained the previous cable overlay.");
                 Assert(!Field<System.Windows.Forms.Timer>(control, "debounce").Enabled, "Paused endpoint edit started an automatic calculation.");
                 Assert(Field<Button>(control, "calculate").Enabled, "Pause disabled manual Calculate path after editing.");
             }
+            AssertAppearance(before, true, true);
+        });
+        Check("disposing_control_clears_shown_cable_overlay", () =>
+        {
+            var before = Snapshot(geometry);
+            using (var control = new PathFinderControl())
+            {
+                document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Wait((Task)Invoke(control, "AssignAsync"));
+                document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Invoke(control, "Pick", true);
+                document.CurrentSelection.CopyFrom(new[] { leaves[1] }); Invoke(control, "Pick", false);
+                Wait((Task)Invoke(control, "CalculateAsync")); Invoke(control, "ShowPath");
+                Assert(RoutePathOverlay.IsShownFor(document), "Dispose test did not have a shown cable.");
+            }
+            Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Disposed control retained the cable overlay.");
             AssertAppearance(before, true, true);
         });
     }

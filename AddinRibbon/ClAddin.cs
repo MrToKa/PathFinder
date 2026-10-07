@@ -24,7 +24,7 @@ namespace AddinRibbon
 namespace AddinDockPanel
 {
     [Plugin("ClDockPanelUpdate", "CONN", DisplayName = "Path Finder")]
-    [DockPanePlugin(620, 650, AutoScroll = true, MinimumHeight = 300, MinimumWidth = 400)]
+    [DockPanePlugin(620, 650, FixedSize = false, AutoScroll = true, MinimumHeight = 300, MinimumWidth = 400)]
     public class ClDockPanelUpdate : DockPanePlugin
     {
         public override Control CreateControlPane() { return new PathFinderControl(); }

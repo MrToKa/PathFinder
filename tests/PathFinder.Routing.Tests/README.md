@@ -21,19 +21,24 @@ dotnet run --project tests/PathFinder.Routing.Tests/PathFinder.Routing.Tests.csp
 The checks cover complete route codes and piece suffixes, polyline bends,
 interior endpoint projection on long trays, the strict `> 2 m` SECONDARY
 boundary, gaps and Z separation, exact angled contacts between samples at the
-connection tolerance boundary, category restrictions, route re-entry,
+connection tolerance boundary, full right-angle lengths at both configured
+tolerances, known diagonal lengths in three dimensions, interior junctions,
+parallel overlap in both directions, category restrictions, route re-entry,
 reversal, repeated calculation, invalid input, graph node and connection limits, cancellation
 before/during work, and a 45 x 45 grid of intersecting trays.
 
-The latest run on 6 October 2026 passed all 14 checks including the Excel
+The latest run on 7 October 2026 passed all 17 checks including the Excel
 fixture. The grid used 90 polylines and approximately 31,770 regular samples;
-calculation completed in 163 ms on the development machine. This is a detached
+calculation completed in 149 ms on the development machine and followed the
+88 m orthogonal route without cutting corners. This is a detached
 geometry benchmark, not a Navisworks model-load or display benchmark.
 
 Each calculation creates its own graph. Cross-tray links are restricted to
-the selected tolerance and eligible cable category. A spatial hash discovers
-nearby samples and original polyline pieces; exact closest-point connections
-cover contacts that lie between regular samples. Contact points are inserted
+the selected tolerance and eligible cable category. A spatial hash uses samples
+only to discover nearby original polyline pieces; cross-tray links join their
+analytical closest contacts. Arbitrary neighbouring samples cannot shortcut a
+bend. Parallel pieces connect at both overlap boundaries to preserve continuous
+travel. Contact points are inserted
 into the continuous tray geometry rather than connected to an arbitrary tray
 endpoint. Only consecutive route codes are collapsed, so `B001/BC001/B001`
 retains the return to B001. Reversal reverses the existing result, including

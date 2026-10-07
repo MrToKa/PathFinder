@@ -31,18 +31,21 @@ To compile the helpers without starting Navisworks or checking installation:
 ./scripts/Test-Navisworks.ps1 -BuildOnly
 ```
 
-The runner calls the smoke plugin in the native host. It checks the deepest
+The runner calls the smoke plugin for 24 checks in the native host. It checks the deepest
 leaf traversal and overlapping rules; metre conversion; missing/duplicate
 objects; cancellation; model-transform invalidation and captured item
 fingerprints; temporary appearance, opacity, reversal, restoration and
 disposal; dock registration; two tabs, the Pause default and manual calculation;
-and the actual Assign/Pick/Calculate/Show/Reverse/Restore UI handlers. The
+the actual Assign/Pick/Calculate/Show/Reverse/Restore UI handlers; native docking
+metadata and parent reset/resize/reparent layout; render-plugin loading, units,
+bounds and a visible yellow cable line in ScenePlusOverlay compared with Scene;
+and overlay clearing on Restore, edit and Dispose. The
 sample must contain at least five geometry leaves, a nested root and duplicate
 display names. The helper changes only the isolated in-memory document and
 does not save it. Its permanent-material assertions deliberately alter the
 test session before validating temporary-view restoration.
 
-Results, logs and two tab previews are written into a unique directory under
+Results, logs, tab/parented previews and scene/overlay images are written into a unique directory under
 the gitignored `.test-output/`. A custom `-OutputDirectory` is supported. Results
 include model names and native error details, so review them before sharing.
 
