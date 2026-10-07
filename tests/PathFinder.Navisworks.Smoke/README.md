@@ -31,7 +31,7 @@ To compile the helpers without starting Navisworks or checking installation:
 ./scripts/Test-Navisworks.ps1 -BuildOnly
 ```
 
-The runner calls the smoke plugin for 24 checks in the native host. It checks the deepest
+The runner calls the smoke plugin for 32 checks in the native host. It checks the deepest
 leaf traversal and overlapping rules; metre conversion; missing/duplicate
 objects; cancellation; model-transform invalidation and captured item
 fingerprints; temporary appearance, opacity, reversal, restoration and
@@ -39,7 +39,12 @@ disposal; dock registration; two tabs, the Pause default and manual calculation;
 the actual Assign/Pick/Calculate/Show/Reverse/Restore UI handlers; native docking
 metadata and parent reset/resize/reparent layout; render-plugin loading, units,
 bounds and a visible yellow cable line in ScenePlusOverlay compared with Scene;
-and overlay clearing on Restore, edit and Dispose. The
+and overlay clearing on Restore, edit and Dispose. Visibility checks cover hidden
+duplicates and ancestors, all-hidden names, cached-name lookup after Hide/Unhide,
+hidden picked endpoints, visible-only parent centres, hidden tray capture and
+rule-preserving visibility invalidation, including clearing the UI result and overlay.
+The duplicate fixture probes native instance visibility to keep exactly one visible
+matching object, then restores the original hidden flags. The
 sample must contain at least five geometry leaves, a nested root and duplicate
 display names. The helper changes only the isolated in-memory document and
 does not save it. Its permanent-material assertions deliberately alter the

@@ -1,13 +1,13 @@
 # PathFinder — Navisworks Manage 2027
 
-Two-tab cable routing proof of concept, version 1.1.1, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
+Two-tab cable routing proof of concept, version 1.1.2, for the Navisworks Manage 2027 .NET API (24.x), .NET Framework 4.8, x64. Selected routes form a 3D graph in metres; its edge lengths and endpoint attachments determine the cable length between From and To.
 
 ## Use
 
 Open a 3D model, then choose **Path Finder → Tool Panel**.
 
 1. On **Routes**, select tray containers or individual tray leaves in the Navisworks Selection Tree. Choose **MV**, **LV**, and/or **Control**, then click **Add / update selection**. Every deepest descendant with geometry is included; selecting a leaf itself also works. The grid shows each selected root, its geometry-leaf count, and editable permissions. A later rule overrides an earlier rule for overlapping leaves. **Remove rule** removes selected grid rows.
-2. On **Path**, enter exact **From** and **To** display names, preserving any initial `=`. Alternatively select exactly one model object and press its **Use selection** button. This also resolves duplicate display names and unnamed imported geometry. Choose the cable type and press **Calculate path**.
+2. On **Path**, enter exact **From** and **To** display names, preserving any initial `=`. Lookup uses only currently visible objects with visible geometry; hidden objects and descendants of hidden parents are skipped. Alternatively select exactly one visible model object and press its **Use selection** button. This resolves multiple visible objects with the same display name and unnamed imported geometry. Choose the cable type and press **Calculate path**.
 3. The result lists route codes in traversal order and estimated length. `/SECONDARY` is inserted at the From and/or To end when the endpoint centre is strictly more than **2 metres** from the closest allowed route centreline. Exactly 2 m does not trigger it.
 4. **Show path** makes From green, To orange, and route geometry blue, all at 0% transparency. Every other model object receives 95% transparency. A yellow world-anchored 3D line displays the calculated cable path, including endpoint attachments; it remains visible over the solids. If From and To overlap, shared geometry is purple. **Restore view** removes the line and restores the previous visible temporary materials. Permanent materials and hidden states are preserved.
 5. **Reverse** swaps From/To and reverses the result, including SECONDARY markers. A displayed path updates its endpoint colours and line direction.
@@ -15,6 +15,8 @@ Open a 3D model, then choose **Path Finder → Tool Panel**.
 **Pause automatic calculation** starts checked. Selection changes never trigger path calculation or file refresh. The manual button works while paused. If you explicitly uncheck Pause, changes to valid From/To fields, cable type, or connection tolerance start a calculation after a 700 ms delay. Model capture is batched on the Navisworks UI thread; graph calculation uses detached values on a worker. **Cancel** stops capture/calculation. There is no automatic `UpdateFiles()` call.
 
 Route rules belong to the current pane/model session. Opening/replacing/appending a model, changing model transforms or document units, or updating the model clears stale rules/results. Re-add the route selection afterward.
+
+Hidden tray leaves are excluded from the calculated network. **Hide/Unhide** clears any calculated/displayed path while preserving route rules and picked endpoint identities. Recalculate to use the current visible objects. Unhidden trays participate again without re-adding their rules; a hidden picked endpoint must be replaced or unhidden. The grid's leaf count describes the complete assigned hierarchy, including leaves currently hidden. Visibility means Navisworks Hidden state, including ancestors; transparency and camera occlusion do not hide an object for routing.
 
 ## Geometry and engineering limits
 
@@ -32,7 +34,7 @@ Names preserve full codes such as `/BC001`, `/DFBC009`, `/VFD007-2`. Rules are e
 
 Run `scripts/Build.ps1` in PowerShell. It discovers Manage 2027 and Visual Studio MSBuild; override with `-NavisworksInstallDir` and `-MSBuildPath` if needed. Build output is `AddinRibbon/bin/Release`. It does not deploy automatically, and Autodesk DLLs are never copied into the plugin.
 
-Run `dotnet run --project tests/PathFinder.Routing.Tests -- <optional-local-excel-fixture.json>` for the 17-check package-free routing regression harness. The linked production routing code is tested directly. The fixture JSON is an optional local extraction and is not part of the public repository/package. After installing the matching Release DLL and closing Navisworks, run `scripts/Test-Navisworks.ps1` for 24 checks inside a fresh hidden Manage 2027 instance; it writes local results, pane previews and scene/overlay images without saving the model.
+Run `dotnet run --project tests/PathFinder.Routing.Tests -- <optional-local-excel-fixture.json>` for the 17-check package-free routing regression harness. The linked production routing code is tested directly. The fixture JSON is an optional local extraction and is not part of the public repository/package. After installing the matching Release DLL and closing Navisworks, run `scripts/Test-Navisworks.ps1` for 32 checks inside a fresh hidden Manage 2027 instance; it writes local results, pane previews and scene/overlay images without saving the model.
 
 The active UI is `AddinRibbon/Ctr/PathFinderControl.cs`, created by `ClDockPanelUpdate`. Legacy `Algo.Designer.cs` and other old controls remain as reference source and are excluded from the current project. The dock explicitly allows resizing, starts at a useful size and reapplies Dock=Fill after native-parent attachment; font scaling has an explicit baseline.
 

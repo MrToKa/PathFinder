@@ -192,6 +192,7 @@ namespace AddinRibbon.Ctr
             var selected = session.Document?.CurrentSelection.SelectedItems;
             if (selected == null || selected.Count != 1) { status.Text = "Select exactly one From / To object in the Selection Tree."; return; }
             var item = selected.First();
+            if (!RoutingSession.IsVisibleEndpoint(item)) { status.Text = "Select a visible From / To object with geometry."; return; }
             string name = string.IsNullOrWhiteSpace(item.DisplayName) ? RoutingSession.SelectedUnnamedObjectLabel : item.DisplayName;
             if (isFrom) { from.Text = name; pickedFrom = item; }
             else { to.Text = name; pickedTo = item; }
@@ -219,7 +220,7 @@ namespace AddinRibbon.Ctr
                 knownModelRevision = session.ModelRevision;
             }
             InvalidateResult(); RefreshRules();
-            status.Text = session.Assignments.Count == 0 ? "Model changed. Add route objects again." : "Route rules updated. Calculate the path.";
+            status.Text = session.Assignments.Count == 0 ? "Model changed. Add route objects again." : "Route rules or visibility changed. Calculate the path using visible objects.";
             ScheduleCalculation();
         }
         private void InvalidateResult()
@@ -270,7 +271,7 @@ namespace AddinRibbon.Ctr
             if (result == null || !result.Success || resultRevision != session.Revision || busy) return;
             try
             {
-                if (!session.AreCapturedSegmentsCurrent() || resolvedFrom.IsDisposed || resolvedTo.IsDisposed
+                if (!session.AreCapturedSegmentsCurrent() || !RoutingSession.IsVisible(resolvedFrom) || !RoutingSession.IsVisible(resolvedTo)
                     || session.CenterInMeters(resolvedFrom).DistanceTo(capturedFrom) > 1e-9
                     || session.CenterInMeters(resolvedTo).DistanceTo(capturedTo) > 1e-9)
                 {

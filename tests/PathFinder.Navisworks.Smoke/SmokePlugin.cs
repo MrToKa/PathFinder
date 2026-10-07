@@ -43,6 +43,7 @@ public sealed class PathFinderSmoke : AddInPlugin
             if (leaves.Count < 5) throw new InvalidOperationException("Smoke sample must have at least five geometry leaves.");
             TestVisualization(leaves);
             TestRoutingSession(leaves);
+            TestVisibleObjects(leaves);
             TestCableOverlay();
             TestControl();
             TestControlFlow(leaves);
@@ -250,11 +251,11 @@ public sealed class PathFinderSmoke : AddInPlugin
             });
             Check("missing_object_name_has_readable_error", () => ExpectInvalid(() => Wait(session.ResolveAsync("NO_SUCH_OBJECT_PF_SMOKE_928371", null, CancellationToken.None)), "Object not found"));
             var duplicate = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf
-                .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName)).GroupBy(item => item.DisplayName.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
+                .Where(item => !string.IsNullOrWhiteSpace(item.DisplayName) && RoutingSession.IsVisibleEndpoint(item)).GroupBy(item => item.DisplayName.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
             Check("duplicate_name_requires_picked_object", () =>
             {
                 Assert(duplicate != null, "Sample has no duplicate display names.");
-                ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Key, null, CancellationToken.None)), "More than one object");
+                ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Key, null, CancellationToken.None)), "More than one visible object");
                 var picked = duplicate.First();
                 Assert(Wait(session.ResolveAsync(duplicate.Key, picked, CancellationToken.None)).Equals(picked), "Picked duplicate was not resolved.");
             });
@@ -276,6 +277,238 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(session.Revision > revision && session.Assignments.Count == 0 && session.SegmentItems.Count == 0, "Transform did not invalidate route state.");
             });
         }
+    }
+
+    private void TestVisibleObjects(List<ModelItem> leaves)
+    {
+        var all = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf.ToList();
+        var duplicate = FindIndependentVisibleDuplicate(all);
+        Check("one_visible_duplicate_name_resolves_without_hidden_matches", () =>
+        {
+            Assert(duplicate != null, "Sample contains no independently hideable duplicate-name fixture.");
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)), "More than one visible object");
+                document.Models.SetHidden(duplicate.Matches.Where(item => !item.Equals(duplicate.Keep)), true);
+                Assert(EffectivelyVisible(duplicate.Keep), "Fixture hide also hid the intended visible duplicate.");
+                Assert(Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)).Equals(duplicate.Keep), "Hidden duplicate matches still prevent resolving the visible object.");
+            }
+        });
+        Check("all_duplicate_matches_hidden_produce_readable_error", () =>
+        {
+            Assert(duplicate != null, "Sample contains no independently hideable duplicate-name fixture.");
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)), "More than one visible object");
+                document.Models.SetHidden(duplicate.Matches, true);
+                ExpectInvalidWords(() => Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)), "hidden", "visible");
+            }
+        });
+        Check("cached_name_lookup_refilters_after_hide_and_unhide", () =>
+        {
+            Assert(duplicate != null, "Sample contains no independently hideable duplicate-name fixture.");
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)), "More than one visible object");
+                document.Models.SetHidden(duplicate.Matches.Where(item => !item.Equals(duplicate.Keep)), true);
+                Assert(Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)).Equals(duplicate.Keep), "First cached visible lookup failed.");
+                document.Models.SetHidden(new[] { duplicate.Keep }, true);
+                ExpectInvalidWords(() => Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)), "hidden", "visible");
+                document.Models.SetHidden(new[] { duplicate.Keep }, false);
+                Assert(Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)).Equals(duplicate.Keep), "Unhidden object remained excluded by a cached name lookup.");
+                document.Models.SetHidden(duplicate.Matches, false);
+                ExpectInvalid(() => Wait(session.ResolveAsync(duplicate.Name, null, CancellationToken.None)), "More than one visible object");
+            }
+        });
+        Check("hidden_picked_duplicate_cannot_bypass_visibility_filter", () =>
+        {
+            Assert(duplicate != null, "Sample contains no independently hideable duplicate-name fixture.");
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                document.Models.SetHidden(duplicate.Matches.Where(item => !item.Equals(duplicate.Keep)), true);
+                var picked = duplicate.Matches.First(item => !item.Equals(duplicate.Keep));
+                Assert(!EffectivelyVisible(picked), "Picked duplicate fixture is not hidden.");
+                ExpectInvalidWords(() => Wait(session.ResolveAsync(duplicate.Name, picked, CancellationToken.None)), "hidden", "visible");
+            }
+        });
+        Check("hidden_ancestor_excludes_named_child_and_route_descendants", () =>
+        {
+            var child = all.FirstOrDefault(item => item.Parent != null && !string.IsNullOrWhiteSpace(item.DisplayName) && RoutingSession.IsVisibleEndpoint(item));
+            Assert(child != null, "Sample has no visible named child with an ancestor.");
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                document.Models.SetHidden(new[] { child.Parent }, true);
+                Assert(!EffectivelyVisible(child), "Hiding the ancestor did not hide its child.");
+                ExpectInvalidWords(() => Wait(session.ResolveAsync(child.DisplayName, child, CancellationToken.None)), "hidden", "visible");
+                var root = leaves[0].Ancestors.First(item => item.DescendantsAndSelf.Any(candidate => !candidate.Children.Any() && candidate.HasGeometry));
+                hidden.Restore();
+                document.CurrentSelection.CopyFrom(new[] { root });
+                Wait(session.AssignSelectionAsync(CableCategory.LV, CancellationToken.None));
+                document.Models.SetHidden(new[] { root }, true);
+                AssertNoVisibleCapturedRoutes(session);
+                document.CurrentSelection.CopyFrom(new[] { root });
+                Wait(session.AssignSelectionAsync(CableCategory.LV, CancellationToken.None));
+                AssertNoVisibleCapturedRoutes(session);
+            }
+        });
+        Check("hidden_route_leaf_is_skipped_and_unhide_restores_capture", () =>
+        {
+            var root = leaves[0].Ancestors.FirstOrDefault(item => item.DescendantsAndSelf.Count(candidate => !candidate.Children.Any() && candidate.HasGeometry && !candidate.BoundingBox().IsEmpty) > 1);
+            Assert(root != null, "Sample has no route parent with multiple geometry leaves.");
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                document.CurrentSelection.CopyFrom(new[] { root });
+                int assigned = Wait(session.AssignSelectionAsync(CableCategory.LV, CancellationToken.None));
+                var original = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(original.Count == assigned && original.Count > 1, "Baseline route fixture capture failed.");
+                ExpectInvalid(() => Wait(session.ResolveAsync("NO_SUCH_OBJECT_VISIBILITY_CACHE_643915", null, CancellationToken.None)), "Object not found");
+                var nameIndex = Field<object>(session, "nameIndex");
+                Assert(nameIndex != null, "Visibility event test did not populate the reusable name index.");
+                int revision = session.Revision, assignmentCount = session.Assignments.Count;
+                var leaf = session.SegmentItems[original[0].Id];
+                document.Models.SetHidden(new[] { leaf }, true);
+                System.Windows.Forms.Application.DoEvents();
+                Assert(session.Revision > revision, "Native hidden-property event did not invalidate the routing revision.");
+                Assert(session.Assignments.Count == assignmentCount, "Visibility change discarded route assignments.");
+                Assert(ReferenceEquals(nameIndex, Field<object>(session, "nameIndex")), "Visibility change discarded the reusable name index.");
+                Assert(!session.AreCapturedSegmentsCurrent(), "Hiding a captured tray did not make the cached path stale.");
+                var expected = root.DescendantsAndSelf.Count(item => !item.Children.Any() && item.HasGeometry && !item.BoundingBox().IsEmpty && EffectivelyVisible(item));
+                Assert(expected < original.Count, "Native hide did not exclude a route leaf.");
+                var visible = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(visible.Count == expected && session.SegmentItems.Values.All(EffectivelyVisible), "Geometry capture included a hidden tray leaf.");
+                hidden.Restore();
+                var restored = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(restored.Count == original.Count, "Unhiding a tray did not restore geometry capture.");
+                document.Models.SetHidden(new[] { leaf }, true);
+                document.CurrentSelection.CopyFrom(new[] { root });
+                Wait(session.AssignSelectionAsync(CableCategory.Control, CancellationToken.None));
+                var recaptured = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+                Assert(recaptured.Count == expected && session.SegmentItems.Values.All(EffectivelyVisible), "Capturing an added route parent included hidden deepest children.");
+                hidden.Restore();
+                Assert(Wait(session.CaptureSegmentsAsync(CancellationToken.None)).Count == original.Count, "Unhiding children of an added route parent did not restore the network.");
+            }
+        });
+        Check("visible_parent_center_uses_only_remaining_visible_geometry_bounds", () =>
+        {
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var session = new RoutingSession())
+            {
+                double scale = UnitConversion.ScaleFactor(document.Units, Units.Meters);
+                var boxes = new Dictionary<ModelItem, double[]>();
+                foreach (var leaf in leaves.Where(EffectivelyVisible))
+                    using (var box = leaf.BoundingBox())
+                        boxes.Add(leaf, new[] { box.Min.X, box.Min.Y, box.Min.Z, box.Max.X, box.Max.Y, box.Max.Z });
+                var parents = boxes.Keys.SelectMany(leaf => leaf.Ancestors.Select(parent => new { Parent = parent, Leaf = leaf }))
+                    .GroupBy(pair => pair.Parent).Where(group => group.Count() > 1 && !group.Key.HasGeometry)
+                    .OrderBy(group => group.Count()).Take(100);
+                bool verified = false;
+                int probes = 0;
+                foreach (var group in parents)
+                {
+                    var parent = group.Key;
+                    // This fixture must have all geometry at deepest leaves, so
+                    // the independent union includes every drawable shape.
+                    if (parent.Descendants.Any(item => item.HasGeometry && item.Children.Any())) continue;
+                    var children = group.Select(pair => pair.Leaf).ToList();
+                    var originalCenter = CenterOfLeafUnion(children, boxes, scale);
+                    var candidates = children.OrderByDescending(leaf => CenterOfLeafUnion(new[] { leaf }, boxes, scale).DistanceTo(originalCenter)).Take(8);
+                    foreach (var keep in candidates)
+                    {
+                        if (CenterOfLeafUnion(new[] { keep }, boxes, scale).DistanceTo(originalCenter) <= 0.000001) continue;
+                        if (++probes > 32) break;
+                        hidden.Restore();
+                        document.Models.SetHidden(children.Where(leaf => !leaf.Equals(keep)), true);
+                        var remaining = children.Where(EffectivelyVisible).ToList();
+                        if (remaining.Count == 0) continue; // Native instance hiding may also hide keep.
+                        var expected = CenterOfLeafUnion(remaining, boxes, scale);
+                        if (expected.DistanceTo(originalCenter) <= 0.000001) continue;
+                        var actual = session.CenterInMeters(parent);
+                        AssertNear(actual.X, expected.X); AssertNear(actual.Y, expected.Y); AssertNear(actual.Z, expected.Z);
+                        document.Models.SetHidden(children, true);
+                        Assert(!RoutingSession.IsVisibleEndpoint(parent), "Parent whose entire geometry is hidden remained a valid endpoint.");
+                        ExpectInvalidWords(() => session.CenterInMeters(parent), "hidden", "visible");
+                        verified = true;
+                        break;
+                    }
+                    if (verified || probes > 32) break;
+                }
+                Assert(verified, "Sample contains no independently hideable parent whose visible geometry centre measurably changes.");
+            }
+        });
+    }
+
+    private static RoutePoint CenterOfLeafUnion(IEnumerable<ModelItem> leaves, Dictionary<ModelItem, double[]> boxes, double metresPerUnit)
+    {
+        double minX = double.PositiveInfinity, minY = double.PositiveInfinity, minZ = double.PositiveInfinity;
+        double maxX = double.NegativeInfinity, maxY = double.NegativeInfinity, maxZ = double.NegativeInfinity;
+        foreach (var leaf in leaves)
+        {
+            var box = boxes[leaf];
+            minX = Math.Min(minX, box[0]); minY = Math.Min(minY, box[1]); minZ = Math.Min(minZ, box[2]);
+            maxX = Math.Max(maxX, box[3]); maxY = Math.Max(maxY, box[4]); maxZ = Math.Max(maxZ, box[5]);
+        }
+        return new RoutePoint((minX + maxX) * 0.5 * metresPerUnit, (minY + maxY) * 0.5 * metresPerUnit, (minZ + maxZ) * 0.5 * metresPerUnit);
+    }
+
+    private DuplicateFixture FindIndependentVisibleDuplicate(List<ModelItem> all)
+    {
+        using (var hidden = new HiddenSnapshot(document, all))
+        {
+            foreach (var group in all.Where(item => !string.IsNullOrWhiteSpace(item.DisplayName) && RoutingSession.IsVisibleEndpoint(item))
+                .GroupBy(item => item.DisplayName.Trim(), StringComparer.OrdinalIgnoreCase).Where(group => group.Count() > 1)
+                .OrderBy(group => group.Count()).Take(100))
+            {
+                var matches = group.ToList();
+                foreach (var keep in matches.Take(8))
+                {
+                    hidden.Restore();
+                    document.Models.SetHidden(matches.Where(item => !item.Equals(keep)), true);
+                    if (RoutingSession.IsVisibleEndpoint(keep) && matches.Where(item => !item.Equals(keep)).All(item => !EffectivelyVisible(item)))
+                        return new DuplicateFixture { Name = group.Key, Matches = matches, Keep = keep };
+                }
+            }
+        }
+        return null;
+    }
+
+    private static bool EffectivelyVisible(ModelItem item)
+    { return item != null && !item.IsDisposed && item.AncestorsAndSelf.All(ancestor => !ancestor.IsHidden); }
+
+    private void AssertNoVisibleCapturedRoutes(RoutingSession session)
+    {
+        try
+        {
+            var captured = Wait(session.CaptureSegmentsAsync(CancellationToken.None));
+            Assert(captured.Count == 0 && session.SegmentItems.Count == 0, "Hidden route ancestor left captured geometry available.");
+        }
+        catch (InvalidOperationException error)
+        { Assert(error.Message.IndexOf("visible", StringComparison.OrdinalIgnoreCase) >= 0 || error.Message.IndexOf("hidden", StringComparison.OrdinalIgnoreCase) >= 0, error.Message); }
+    }
+
+    private sealed class DuplicateFixture
+    { public string Name; public List<ModelItem> Matches; public ModelItem Keep; }
+
+    private sealed class HiddenSnapshot : IDisposable
+    {
+        private readonly Document document;
+        private readonly Dictionary<ModelItem, bool> hidden;
+        public HiddenSnapshot(Document document, IEnumerable<ModelItem> items)
+        { this.document = document; hidden = items.ToDictionary(item => item, item => item.IsHidden); }
+        public void Restore()
+        {
+            // SetHidden operates on all native instances; snapshot the whole sample
+            // so side effects on equivalent instances are restored as well.
+            document.Models.SetHidden(hidden.Where(pair => !pair.Value).Select(pair => pair.Key), false);
+            document.Models.SetHidden(hidden.Where(pair => pair.Value).Select(pair => pair.Key), true);
+            Assert(hidden.All(pair => pair.Key.IsHidden == pair.Value), "Visibility fixture did not restore the original native hidden flags.");
+        }
+        public void Dispose() { Restore(); }
     }
 
     private void TestControl()
@@ -558,6 +791,33 @@ public sealed class PathFinderSmoke : AddInPlugin
             Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Disposed control retained the cable overlay.");
             AssertAppearance(before, true, true);
         });
+        Check("hiding_endpoint_or_tray_clears_ui_result_and_cable_overlay", () =>
+        {
+            var all = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf.ToList();
+            var before = Snapshot(geometry);
+            using (var hidden = new HiddenSnapshot(document, all))
+            using (var control = new PathFinderControl())
+            {
+                document.CurrentSelection.CopyFrom(new[] { leaves[0] }); Wait((Task)Invoke(control, "AssignAsync"));
+                document.CurrentSelection.CopyFrom(new[] { leaves[1] }); Invoke(control, "Pick", true);
+                document.CurrentSelection.CopyFrom(new[] { leaves[2] }); Invoke(control, "Pick", false);
+                Wait((Task)Invoke(control, "CalculateAsync")); Invoke(control, "ShowPath");
+                Assert(RoutePathOverlay.IsShownFor(document), "Visibility UI test did not have a shown cable.");
+                int assignmentCount = Field<RoutingSession>(control, "session").Assignments.Count;
+                document.Models.SetHidden(new[] { leaves[2] }, true); System.Windows.Forms.Application.DoEvents();
+                Invoke(control, "ShowPath");
+                Assert(Field<RouteResult>(control, "result") == null && !Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
+                    "Hiding the endpoint retained a stale result or visualization.");
+                Assert(Field<RoutingSession>(control, "session").Assignments.Count == assignmentCount, "Endpoint visibility change discarded route rules.");
+                hidden.Restore(); Wait((Task)Invoke(control, "CalculateAsync")); Invoke(control, "ShowPath");
+                Assert(RoutePathOverlay.IsShownFor(document), "Unhiding the endpoint did not permit manual recalculation.");
+                document.Models.SetHidden(new[] { leaves[0] }, true); System.Windows.Forms.Application.DoEvents();
+                Invoke(control, "ShowPath");
+                Assert(Field<RouteResult>(control, "result") == null && !Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
+                    "Hiding a used tray retained a stale result or cable overlay.");
+            }
+            AssertAppearance(before, true, true);
+        });
     }
 
     private static T Field<T>(object target, string name)
@@ -594,6 +854,16 @@ public sealed class PathFinderSmoke : AddInPlugin
     {
         try { action(); } catch (InvalidOperationException error) { Assert(error.Message.Contains(message), error.Message); return; }
         throw new Exception("Expected InvalidOperationException containing: " + message);
+    }
+    private static void ExpectInvalidWords(Action action, params string[] words)
+    {
+        try { action(); }
+        catch (InvalidOperationException error)
+        {
+            Assert(words.Any(word => error.Message.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0), "Unreadable visibility error: " + error.Message);
+            return;
+        }
+        throw new Exception("Expected a readable hidden/visible object error.");
     }
     private void Check(string name, Action action)
     {

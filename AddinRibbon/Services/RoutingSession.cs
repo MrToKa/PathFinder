@@ -47,6 +47,7 @@ namespace AddinRibbon.Services
             {
                 document.Models.CollectionChanged += ModelChanged;
                 document.Models.ModelTransformChanged += TransformChanged;
+                document.Models.ModelItemPropertiesChanged += VisibilityChanged;
                 document.UnitsChanged += ModelChanged;
                 document.FileNameChanged += ModelChanged;
                 document.FilesUpdated += ModelChanged;
@@ -58,12 +59,16 @@ namespace AddinRibbon.Services
             if (document == null) return;
             document.Models.CollectionChanged -= ModelChanged;
             document.Models.ModelTransformChanged -= TransformChanged;
+            document.Models.ModelItemPropertiesChanged -= VisibilityChanged;
             document.UnitsChanged -= ModelChanged;
             document.FileNameChanged -= ModelChanged;
             document.FilesUpdated -= ModelChanged;
         }
         private void ModelChanged(object sender, EventArgs e) { InvalidateModel(); }
         private void TransformChanged(object sender, ModelTransformEventArgs e) { InvalidateModel(); }
+        // Hidden/Required edits change the usable network without replacing the model.
+        // Keep assignments and the complete name index, but invalidate captured results.
+        private void VisibilityChanged(object sender, EventArgs e) { NotifyChanged(); }
         private void InvalidateModel()
         {
             ModelRevision++;
@@ -113,13 +118,18 @@ namespace AddinRibbon.Services
         public async Task<ModelItem> ResolveAsync(string text, ModelItem picked, CancellationToken token)
         {
             RequireDocument();
+            token.ThrowIfCancellationRequested();
             string name = (text ?? "").Trim();
             if (name.Length == 0) throw new InvalidOperationException("Enter both From and To object names.");
             if (picked != null && !picked.IsDisposed)
             {
                 string pickedName = (picked.DisplayName ?? "").Trim();
                 if (string.Equals(pickedName, name, StringComparison.OrdinalIgnoreCase)
-                    || (pickedName.Length == 0 && name == SelectedUnnamedObjectLabel)) return picked;
+                    || (pickedName.Length == 0 && name == SelectedUnnamedObjectLabel))
+                {
+                    if (!IsVisibleEndpoint(picked)) throw new InvalidOperationException("The selected object is hidden or has no visible geometry. Choose a visible From / To object.");
+                    return picked;
+                }
             }
             if (nameIndex == null)
             {
@@ -139,15 +149,35 @@ namespace AddinRibbon.Services
                 nameIndex = index;
             }
             if (!nameIndex.TryGetValue(name, out var matches)) throw new InvalidOperationException("Object not found: " + name);
-            if (matches.Count != 1) throw new InvalidOperationException("More than one object is named " + name + ". Select the intended object and use 'Use selection'.");
-            return matches[0];
+            // Evaluate the current visibility, including ancestors, on every lookup.
+            // A cached name index must also support objects unhidden after its creation.
+            var visible = matches.Where(IsVisibleEndpoint).ToList();
+            if (visible.Count == 0) throw new InvalidOperationException("Object not found among visible objects: " + name + ". Matching objects are hidden or have no visible geometry.");
+            if (visible.Count != 1) throw new InvalidOperationException("More than one visible object is named " + name + ". Select the intended object and use 'Use selection'.");
+            return visible[0];
+        }
+
+        public static bool IsVisible(ModelItem item)
+        {
+            if (item == null || item.IsDisposed) return false;
+            foreach (var ancestor in item.AncestorsAndSelf)
+                if (ancestor.IsDisposed || ancestor.IsHidden) return false;
+            return true;
+        }
+        public static bool IsVisibleEndpoint(ModelItem item)
+        {
+            if (!IsVisible(item)) return false;
+            using (var box = item.BoundingBox(true)) return !box.IsEmpty;
         }
 
         public RoutePoint CenterInMeters(ModelItem item)
         {
-            var box = item.BoundingBox();
-            if (box.IsEmpty) throw new InvalidOperationException("Object has no geometry: " + item.DisplayName);
-            return ToMeters(box.Center, UnitConversion.ScaleFactor(document.Units, Units.Meters));
+            if (!IsVisible(item)) throw new InvalidOperationException("From / To object is hidden. Choose a visible object.");
+            using (var box = item.BoundingBox(true))
+            {
+                if (box.IsEmpty) throw new InvalidOperationException("Object has no visible geometry: " + item.DisplayName);
+                return ToMeters(box.Center, UnitConversion.ScaleFactor(document.Units, Units.Meters));
+            }
         }
 
         public async Task<List<TraySegment>> CaptureSegmentsAsync(CancellationToken token)
@@ -168,13 +198,18 @@ namespace AddinRibbon.Services
             {
                 token.ThrowIfCancellationRequested();
                 var item = pair.Key;
-                var box = item.BoundingBox();
-                if (pair.Value.Categories != CableCategory.None && !box.IsEmpty)
+                if (pair.Value.Categories != CableCategory.None && IsVisible(item))
                 {
-                    string id = (++count).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    segments.Add(new TraySegment(id, FindRouteName(item, pair.Value.Root), pair.Value.Categories, Centerline(box, scale)));
-                    items.Add(id, item);
-                    boxes.Add(item, BoxCoordinates(box));
+                    using (var box = item.BoundingBox())
+                    {
+                        if (!box.IsEmpty)
+                        {
+                            string id = (++count).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            segments.Add(new TraySegment(id, FindRouteName(item, pair.Value.Root), pair.Value.Categories, Centerline(box, scale)));
+                            items.Add(id, item);
+                            boxes.Add(item, BoxCoordinates(box));
+                        }
+                    }
                 }
                 if (++visited % 200 == 0) await Task.Delay(1, token);
                 if (revision != Revision) throw new OperationCanceledException("Model changed during geometry capture.");
@@ -193,7 +228,7 @@ namespace AddinRibbon.Services
             if (capturedBoxes.Count == 0) return false;
             foreach (var pair in capturedBoxes)
             {
-                if (pair.Key.IsDisposed) return false;
+                if (!IsVisible(pair.Key)) return false;
                 var box = pair.Key.BoundingBox();
                 if (box.IsEmpty || !pair.Value.SequenceEqual(BoxCoordinates(box))) return false;
             }
