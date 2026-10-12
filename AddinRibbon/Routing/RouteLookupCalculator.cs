@@ -120,20 +120,31 @@ namespace AddinRibbon.Routing
             if (!AddNeighbourConnections(nodes, pieces, segmentNodes, tolerance, maxNodes, maxConnections, token, out limit))
                 return limit == GraphLimit.Connections ? ConnectionLimitFailure(maxConnections) :
                     limit == GraphLimit.Candidates ? CandidateLimitFailure(maxConnections) : NodeLimitFailure(maxNodes);
+            if (!CloseLookupPolylines(nodes, segmentNodes, maxConnections, token))
+                return ConnectionLimitFailure(maxConnections);
 
-            // No From/To coordinates exist in this workflow. Only unambiguous
-            // outer-route ends can define the line; a fork cannot invent an endpoint.
+            // Without equipment endpoints, a single label uses its longest
+            // terminal-to-terminal main chain. Shorter child branches remain unused.
             string endpointError;
             var starts = LookupTerminals(nodes, eligible, codes[0], token, out endpointError);
             if (starts == null) return RouteResult.Failure(endpointError);
             var ends = codes.Count == 1 ? starts : LookupTerminals(nodes, eligible, codes[codes.Count - 1], token, out endpointError);
             if (ends == null) return RouteResult.Failure(endpointError);
-            int first = starts[0], last = starts[1];
-            if (codes.Count > 1)
+            int first = starts[0], last = starts[starts.Length - 1];
+            long inferenceOperations = 0, inferenceLimit = CandidateLimit(maxConnections);
+            if (codes.Count == 1)
             {
-                first = OuterLookupTerminal(nodes, eligible, starts, codes[0], codes[1], token, out endpointError);
+                if (!LookupDiameterEnds(nodes, eligible, starts, codes[0], token,
+                    ref inferenceOperations, inferenceLimit, out first, out last, out endpointError))
+                    return RouteResult.Failure(endpointError);
+            }
+            else
+            {
+                first = OuterLookupTerminal(nodes, eligible, starts, codes[0], codes[1], token,
+                    ref inferenceOperations, inferenceLimit, out endpointError);
                 if (first < 0) return RouteResult.Failure(endpointError);
-                last = OuterLookupTerminal(nodes, eligible, ends, codes[codes.Count - 1], codes[codes.Count - 2], token, out endpointError);
+                last = OuterLookupTerminal(nodes, eligible, ends, codes[codes.Count - 1], codes[codes.Count - 2], token,
+                    ref inferenceOperations, inferenceLimit, out endpointError);
                 if (last < 0) return RouteResult.Failure(endpointError);
             }
             PathCost cost;
@@ -172,32 +183,45 @@ namespace AddinRibbon.Routing
             return StringComparer.OrdinalIgnoreCase.Equals(trays[nodes[first].Segment].RouteCode, trays[nodes[last].Segment].RouteCode);
         }
 
+        private static bool CloseLookupPolylines(List<Node> nodes, List<List<int>> segmentNodes,
+            int maxConnections, CancellationToken token)
+        {
+            long connections = nodes.Sum(node => (long)node.Edges.Count) / 2;
+            foreach (var ordered in segmentNodes)
+            {
+                token.ThrowIfCancellationRequested();
+                if (ordered.Count < 2) continue;
+                int first = ordered[0], last = ordered[ordered.Count - 1];
+                // The repeated first point of one closed polyline is a seam,
+                // not permission to connect unrelated coincident tray geometry.
+                if (nodes[first].Point.DistanceTo(nodes[last].Point) > ConnectionGapEpsilonMeters
+                    || nodes[first].Edges.Any(edge => edge.Node == last)) continue;
+                if (connections >= maxConnections) return false;
+                Connect(nodes, first, last, nodes[first].Point.DistanceTo(nodes[last].Point));
+                connections++;
+            }
+            return true;
+        }
+
         /// <summary>Contracts coincident physical contacts so a joint is not mistaken for a branch.</summary>
         private static int[] LookupTerminals(List<Node> nodes, List<TraySegment> trays, string code,
             CancellationToken token, out string error)
         {
             error = null;
             var parent = Enumerable.Range(0, nodes.Count).ToArray();
-            var coincident = new Dictionary<RoutePoint, int>();
             for (int first = 0; first < nodes.Count; first++)
             {
                 if ((first & 127) == 0) token.ThrowIfCancellationRequested();
                 if (!StringComparer.OrdinalIgnoreCase.Equals(trays[nodes[first].Segment].RouteCode, code)) continue;
-                // A polyline may close on itself without a cross-tray edge.
-                // Coincident endpoint coordinates then describe one physical joint.
-                int existing;
-                if (coincident.TryGetValue(nodes[first].Point, out existing))
-                {
-                    int a = LookupRoot(parent, first), b = LookupRoot(parent, existing);
-                    if (a != b) parent[Math.Max(a, b)] = Math.Min(a, b);
-                }
-                else coincident.Add(nodes[first].Point, first);
                 foreach (var edge in nodes[first].Edges)
+                {
+                    token.ThrowIfCancellationRequested();
                     if (edge.Length <= ConnectionGapEpsilonMeters && SameLookupCode(nodes, trays, first, edge.Node))
                     {
                         int a = LookupRoot(parent, first), b = LookupRoot(parent, edge.Node);
                         if (a != b) parent[Math.Max(a, b)] = Math.Min(a, b);
                     }
+                }
             }
             var links = new Dictionary<int, HashSet<int>>();
             for (int first = 0; first < nodes.Count; first++)
@@ -208,11 +232,14 @@ namespace AddinRibbon.Routing
                 HashSet<int> neighbors;
                 if (!links.TryGetValue(a, out neighbors)) links.Add(a, neighbors = new HashSet<int>());
                 foreach (var edge in nodes[first].Edges)
+                {
+                    token.ThrowIfCancellationRequested();
                     if (SameLookupCode(nodes, trays, first, edge.Node))
                     {
                         int b = LookupRoot(parent, edge.Node);
                         if (a != b) neighbors.Add(b);
                     }
+                }
             }
             var terminals = links.Where(pair => pair.Value.Count == 1).Select(pair => pair.Key).OrderBy(value => value).ToArray();
             var visited = new HashSet<int>();
@@ -228,14 +255,55 @@ namespace AddinRibbon.Routing
                     foreach (int next in links[node]) pending.Push(next);
                 }
             }
-            if (terminals.Length != 2 || visited.Count != links.Count)
+            if (visited.Count != links.Count)
             {
-                error = "Route " + code + " has ambiguous ends (" + terminals.Length +
-                    " terminals, " + (visited.Count == links.Count ? "connected" : "disconnected") +
-                    " geometry). Enter neighboring route names to identify the required branch; an outer route must have two unambiguous ends.";
+                error = "Route " + code + " has disconnected geometry at the current Connection gap. A partial logical route cannot be shown as a complete path.";
                 return null;
             }
+            if (terminals.Length < 2) terminals = links.Keys.ToArray();
+            Array.Sort(terminals, (first, last) => CompareLookupGeometry(nodes, trays, first, last));
             return terminals;
+        }
+
+        private static int CompareLookupGeometry(List<Node> nodes, List<TraySegment> trays, int first, int last)
+        {
+            var a = nodes[first].Point; var b = nodes[last].Point;
+            int order = a.X.CompareTo(b.X);
+            if (order == 0) order = a.Y.CompareTo(b.Y);
+            if (order == 0) order = a.Z.CompareTo(b.Z);
+            if (order == 0) order = StringComparer.Ordinal.Compare(trays[nodes[first].Segment].Id, trays[nodes[last].Segment].Id);
+            if (order == 0) order = nodes[first].Along.CompareTo(nodes[last].Along);
+            return order == 0 ? first.CompareTo(last) : order;
+        }
+
+        private static bool LookupDiameterEnds(List<Node> nodes, List<TraySegment> trays, int[] terminals,
+            string code, CancellationToken token, ref long operations, long limit,
+            out int first, out int last, out string error)
+        {
+            first = terminals[0]; last = terminals[terminals.Length - 1]; error = null;
+            if (terminals.Length <= 2) return true;
+            double longest = double.NegativeInfinity;
+            for (int a = 0; a < terminals.Length - 1; a++)
+            {
+                bool exhausted;
+                var costs = LookupCostsFrom(nodes, trays, new[] { terminals[a] }, code, token,
+                    ref operations, limit, out exhausted);
+                if (exhausted) { error = LookupInferenceLimitMessage(code, limit); return false; }
+                for (int b = a + 1; b < terminals.Length; b++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (++operations > limit) { error = LookupInferenceLimitMessage(code, limit); return false; }
+                    double length = costs[terminals[b]].PhysicalLength;
+                    if (!RoutePoint.IsFinite(length))
+                    {
+                        error = "Route " + code + " is internally disconnected between its candidate ends.";
+                        return false;
+                    }
+                    if (length > longest + ConnectionGapEpsilonMeters)
+                    { longest = length; first = terminals[a]; last = terminals[b]; }
+                }
+            }
+            return true;
         }
 
         private static int LookupRoot(int[] parent, int value)
@@ -247,7 +315,7 @@ namespace AddinRibbon.Routing
         }
 
         private static int OuterLookupTerminal(List<Node> nodes, List<TraySegment> trays, int[] terminals,
-            string code, string neighbor, CancellationToken token, out string error)
+            string code, string neighbor, CancellationToken token, ref long operations, long limit, out string error)
         {
             error = null;
             var contacts = new HashSet<int>();
@@ -255,53 +323,75 @@ namespace AddinRibbon.Routing
             {
                 if ((index & 127) == 0) token.ThrowIfCancellationRequested();
                 if (!StringComparer.OrdinalIgnoreCase.Equals(trays[nodes[index].Segment].RouteCode, code)) continue;
-                if (nodes[index].Edges.Any(edge => StringComparer.OrdinalIgnoreCase.Equals(trays[nodes[edge.Node].Segment].RouteCode, neighbor)))
-                    contacts.Add(index);
+                foreach (var edge in nodes[index].Edges)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (!StringComparer.OrdinalIgnoreCase.Equals(trays[nodes[edge.Node].Segment].RouteCode, neighbor)) continue;
+                    contacts.Add(index); break;
+                }
             }
             if (contacts.Count == 0)
             {
                 error = "No connection between " + code + " and " + neighbor + " at the current Connection gap.";
                 return -1;
             }
-            double a = LookupDistanceToContacts(nodes, trays, terminals[0], contacts, token);
-            double b = LookupDistanceToContacts(nodes, trays, terminals[1], contacts, token);
-            if (!RoutePoint.IsFinite(a) || !RoutePoint.IsFinite(b))
+            bool exhausted;
+            var costs = LookupCostsFrom(nodes, trays, contacts, code, token, ref operations, limit, out exhausted);
+            if (exhausted) { error = LookupInferenceLimitMessage(code, limit); return -1; }
+            int selected = -1;
+            double longest = double.NegativeInfinity;
+            foreach (int terminal in terminals)
             {
-                error = "Route " + code + " is internally disconnected from " + neighbor + ".";
-                return -1;
+                token.ThrowIfCancellationRequested();
+                double length = costs[terminal].PhysicalLength;
+                if (!RoutePoint.IsFinite(length))
+                { error = "Route " + code + " is internally disconnected from " + neighbor + "."; return -1; }
+                if (length > longest + ConnectionGapEpsilonMeters)
+                { longest = length; selected = terminal; }
             }
-            if (Math.Abs(a - b) <= ConnectionGapEpsilonMeters)
-            {
-                error = "Route " + code + " has two equally plausible outer ends toward " + neighbor +
-                    ". The entered names do not identify a unique endpoint.";
-                return -1;
-            }
-            return a > b ? terminals[0] : terminals[1];
+            return selected;
         }
 
-        private static double LookupDistanceToContacts(List<Node> nodes, List<TraySegment> trays, int first,
-            HashSet<int> contacts, CancellationToken token)
+        private static string LookupInferenceLimitMessage(string code, long limit)
         {
-            var distance = Enumerable.Repeat(double.PositiveInfinity, nodes.Count).ToArray();
+            return "Route " + code + " exceeds the " + limit + " endpoint-inference work limit. Enter more specific route names or select a smaller route area.";
+        }
+
+        private static PathCost[] LookupCostsFrom(List<Node> nodes, List<TraySegment> trays, IEnumerable<int> starts,
+            string code, CancellationToken token, ref long operations, long limit, out bool exhausted)
+        {
+            exhausted = false;
+            operations += nodes.Count;
+            if (operations > limit) { exhausted = true; return null; }
+            var distance = Enumerable.Repeat(PathCost.Unreachable, nodes.Count).ToArray();
+            var settled = new bool[nodes.Count];
             var queue = new MinHeap();
-            distance[first] = 0;
-            queue.Add(new QueueEntry(first, new PathCost(0, 0, 0)));
+            foreach (int first in starts)
+            {
+                token.ThrowIfCancellationRequested();
+                distance[first] = new PathCost(0, 0, 0);
+                queue.Add(new QueueEntry(first, distance[first]));
+            }
             while (queue.Count > 0)
             {
                 token.ThrowIfCancellationRequested();
                 var entry = queue.RemoveFirst();
-                if (entry.Cost.PhysicalLength > distance[entry.Node]) continue;
-                if (contacts.Contains(entry.Node)) return entry.Cost.PhysicalLength;
+                if (settled[entry.Node] || entry.Cost.CompareTo(distance[entry.Node]) > 0) continue;
+                settled[entry.Node] = true;
                 foreach (var edge in nodes[entry.Node].Edges)
                 {
+                    if (++operations > limit) { exhausted = true; return distance; }
+                    if ((operations & 127) == 0) token.ThrowIfCancellationRequested();
                     if (!SameLookupCode(nodes, trays, entry.Node, edge.Node)) continue;
-                    double candidate = entry.Cost.PhysicalLength + edge.Length;
-                    if (candidate >= distance[edge.Node]) continue;
+                    var candidate = entry.Cost.Add(edge);
+                    if (settled[edge.Node] || !RoutePoint.IsFinite(candidate.PhysicalLength) || !RoutePoint.IsFinite(candidate.GapLength)
+                        || candidate.CompareTo(distance[edge.Node]) >= 0) continue;
                     distance[edge.Node] = candidate;
-                    queue.Add(new QueueEntry(edge.Node, new PathCost(0, 0, candidate)));
+                    queue.Add(new QueueEntry(edge.Node, candidate));
                 }
             }
-            return double.PositiveInfinity;
+            token.ThrowIfCancellationRequested();
+            return distance;
         }
 
         private sealed class LookupState

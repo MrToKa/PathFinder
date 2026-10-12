@@ -4,7 +4,8 @@ param(
     [string]$MSBuildPath,
     [string]$ModelPath,
     [string]$OutputDirectory,
-    [ValidateSet('smoke', 'extract-model', 'background-transparency', 'path-lookup')][string]$Mode = 'smoke',
+    [ValidateSet('smoke', 'extract-model', 'background-transparency', 'path-lookup', 'path-lookup-routes')][string]$Mode = 'smoke',
+    [string]$LookupPathsFile,
     [ValidateRange(30, 300)][int]$TimeoutSeconds = 300,
     [switch]$BuildOnly
 )
@@ -52,6 +53,11 @@ if (@($priorRoamers | Where-Object { [string]::IsNullOrWhiteSpace($_.ExecutableP
 if ([string]::IsNullOrWhiteSpace($ModelPath)) { $ModelPath = Join-Path $hostDir 'Samples\snowmobile.nwd' }
 $modelFile = [System.IO.Path]::GetFullPath($ModelPath)
 if (-not (Test-Path -LiteralPath $modelFile -PathType Leaf)) { throw "Smoke model is missing: $modelFile." }
+if ($Mode -eq 'path-lookup-routes') {
+    if ([string]::IsNullOrWhiteSpace($LookupPathsFile)) { throw 'Provide -LookupPathsFile with the local JSON route specifications.' }
+    $lookupSpec = [System.IO.Path]::GetFullPath($LookupPathsFile)
+    if (-not (Test-Path -LiteralPath $lookupSpec -PathType Leaf)) { throw 'The lookup route specification file is missing.' }
+}
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $runName = 'navisworks-' + [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
     $OutputDirectory = Join-Path (Join-Path $repoRoot '.test-output') $runName
@@ -64,6 +70,7 @@ $stderrPath = Join-Path $outputRoot 'runner.stderr.log'
 if (Test-Path -LiteralPath $resultPath) { throw "Refusing to replace an earlier native result at $resultPath. Choose an empty output directory." }
 $arguments = @($hostDir, $modelFile, $installedAssembly, $smokeAssembly, $resultPath)
 if ($Mode -ne 'smoke') { $arguments += $Mode }
+if ($Mode -eq 'path-lookup-routes') { $arguments += $lookupSpec }
 # These are existing Windows file paths, with no embedded quotes or trailing slash.
 # Quote each argument explicitly because Start-Process joins its ArgumentList.
 foreach ($argument in $arguments) {

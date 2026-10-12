@@ -14,7 +14,7 @@ internal static class RouteLookupTests
         run("Lookup does not skip a listed route at an available direct contact", NoSkippedStage);
         run("Lookup selects only the required internal branch through a logical route", InternalBranch);
         run("Lookup single route follows every curve vertex between its unique ends", SingleRoute);
-        run("Lookup reports a single route with forks, closed loops or disconnected ends", AmbiguousEnds);
+        run("Lookup main spans handle forks, tied ends and closed loops while rejecting disconnected geometry", AmbiguousEnds);
         run("Lookup reports every missing visible route name", MissingNames);
         run("Lookup names the failing pair and never uses an unlisted bridge", DisconnectedPair);
         run("Lookup uses current physical surface clearance and retains centreline connectors", PhysicalClearance);
@@ -91,6 +91,12 @@ internal static class RouteLookupTests
         Assert(result.SegmentIds.SequenceEqual(new[] { "start", "middle-left", "middle-right", "end" }), "Unused child branch was included.");
         Near(8, result.LengthMeters, "Branch-free route length");
         Assert(result.PathPoints.All(point => point.Y == 0), "Branch points entered the yellow line.");
+        var outerFork = Find(new[] { T("start-left", "/C001", P(-4), P(0)),
+            T("start-unused", "/C001", P(0), P(0, 1)), T("middle", "/C002", P(0), P(4)),
+            T("end", "/C003", P(4), P(6)) }, "/C001/C002/C003", .05);
+        Assert(outerFork.Success, outerFork.Message);
+        Assert(outerFork.SegmentIds.SequenceEqual(new[] { "start-left", "middle", "end" }), "An outer fork must choose its farthest approach and omit its shorter spur.");
+        Near(10, outerFork.LengthMeters, "Longest outer approach");
     }
     private static void SingleRoute()
     {
@@ -104,11 +110,27 @@ internal static class RouteLookupTests
     {
         var branch = new[] { T("a", "/5LD04", P(0), P(2)), T("b", "/5LD04", P(2), P(4)), T("fork", "/5LD04", P(2), P(2, 4)) };
         var fork = Find(branch, "/5LD04", .05);
-        Assert(!fork.Success && fork.Message.Contains("/5LD04") && fork.Message.Contains("ambiguous"), "A fork invented an arbitrary endpoint.");
+        Assert(fork.Success, fork.Message);
+        Near(6, fork.LengthMeters, "A fork must display its longest main span");
+        Assert(fork.SegmentIds.SequenceEqual(new[] { "a", "fork" }), "Equal longest spans must use the deterministic geometry-first pair.");
+        Assert(Find(branch.Reverse(), "/5LD04", .05).PathPoints.SequenceEqual(fork.PathPoints), "Tied endpoint selection depends on enumeration order.");
+        var shortBranch = Find(new[] { T("a", "/5LD04", P(0), P(2)), T("b", "/5LD04", P(2), P(4)),
+            T("unused", "/5LD04", P(2), P(2, 1)) }, "/5LD04", .05);
+        Assert(shortBranch.Success && !shortBranch.SegmentIds.Contains("unused"), "A shorter spur entered the single-route main span.");
+        Near(4, shortBranch.LengthMeters, "Main chain excludes the short branch");
         var closed = Find(new[] { T("loop", "/5LD04", P(0), P(2), P(2, 2), P(0, 2), P(0)) }, "/5LD04", .05);
-        Assert(!closed.Success, "A ring has no unique terminal-to-terminal path.");
+        Assert(closed.Success, closed.Message);
+        Near(4, closed.LengthMeters, "A loop uses its farthest geodesic span, with a real closing seam");
+        Assert(closed.PathPoints[0].DistanceTo(P(0)) == 0 && closed.PathPoints[closed.PathPoints.Count - 1].DistanceTo(P(2, 2)) == 0,
+            "A loop must use geometry-first diameter endpoints.");
         var disjoint = Find(new[] { T("a", "/5LD04", P(0), P(1)), T("b", "/5LD04", P(10), P(11)) }, "/5LD04", .05);
         Assert(!disjoint.Success && disjoint.Message.Contains("disconnected"), "Two disconnected same-name chains silently selected one.");
+        var zero = Find(new[] { T("zero", "/5LD04", P(0), P(0)) }, "/5LD04", .05);
+        Assert(!zero.Success && zero.Message.Contains("non-zero"), "Degenerate one-candidate geometry must return a clear failure.");
+        var restrictedContact = Find(new[] {
+            new TraySegment("a", "/5LD04", CableCategory.All, new[] { P(-2), P(0), P(2) }, true),
+            new TraySegment("b", "/5LD04", CableCategory.All, new[] { P(0, -2), P(0), P(0, 2) }, true) }, "/5LD04", .05);
+        Assert(!restrictedContact.Success && restrictedContact.Message.Contains("disconnected"), "Coincident port-only interiors invented a forbidden contact.");
     }
     private static void MissingNames()
     {
@@ -176,5 +198,10 @@ internal static class RouteLookupTests
             string.Concat(Enumerable.Range(0, 10).Select(index => index % 2 == 0 ? "/C001" : "/C002")), .05, 8);
         Assert(!repeated.Success && repeated.Message.Contains("lookup-state limit"), "Ordered state bounds were ignored.");
         Throws<ArgumentException>(() => Find(new[] { T("duplicate", "/C001", P(0), P(2)), T("duplicate", "/C001", P(2), P(4)) }, "/C001"));
+        var star = new[] { T("a", "/C001", P(0), P(-2)), T("b", "/C001", P(0), P(2)),
+            T("c", "/C001", P(0), P(0, -2)), T("d", "/C001", P(0), P(0, 2)) };
+        var inferenceLimited = RouteLookupCalculator.Calculate(star, new[] { "/C001" },
+            new RoutingOptions { ConnectionToleranceMeters = .001, MaxGraphConnections = 10 });
+        Assert(!inferenceLimited.Success && inferenceLimited.Message.Contains("endpoint-inference work limit"), "Repeated endpoint queries exceeded their aggregate budget.");
     }
 }

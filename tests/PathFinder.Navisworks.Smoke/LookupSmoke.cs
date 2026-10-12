@@ -216,17 +216,35 @@ public sealed partial class PathFinderSmoke
             }
             AssertAppearance(before, true, true);
         });
-        Check("lookup_ui_identifies_ambiguous_outer_branch_missing_names_and_secondary_only_input", () =>
+        Check("lookup_ui_resolves_branched_first_and_last_routes_and_preserves_missing_name_errors", () =>
         {
+            var before = Snapshot(fixture.Leaves);
             using (var control = new PathFinderControl())
             {
                 var input = Field<TextBox>(control, "lookupInput");
                 var result = Field<TextBox>(control, "lookupOutput");
+                document.CurrentSelection.CopyFrom(new[] { sampleLeaves[0] });
+                var selectionBefore = document.CurrentSelection.SelectedItems.ToArray();
                 input.Text = "/LKP101/LKP102";
                 Field<NumericUpDown>(control, "gap").Value = 0.25m;
                 Wait((Task)Invoke(control, "ShowLookupAsync"));
-                Assert(Field<RouteResult>(control, "lookupResult")?.Success != true && result.Text.Contains("/LKP101"),
-                    "A branching first route guessed a route endpoint without From / To.");
+                var forward = Field<RouteResult>(control, "lookupResult");
+                Assert(forward != null && forward.Success && forward.RouteText == "/LKP101/LKP102",
+                    "A branching first route still requires exactly two ends: " + result.Text);
+                AssertLookupMainLeaves(control, forward, 3);
+                Assert(Math.Abs(forward.LengthMeters - 12.2) < 0.001, "Branched first route did not follow its main span.");
+                AssertOverlayPoints(forward.PathPoints);
+                Invoke(control, "RestoreView"); AssertSelection(selectionBefore); AssertAppearance(before, true, true);
+                input.Text = "/LKP102/LKP101";
+                Wait((Task)Invoke(control, "ShowLookupAsync"));
+                var reversed = Field<RouteResult>(control, "lookupResult");
+                Assert(reversed != null && reversed.Success && reversed.RouteText == "/LKP102/LKP101",
+                    "A branching last route still requires exactly two ends: " + result.Text);
+                AssertLookupMainLeaves(control, reversed, 3);
+                AssertPoint(reversed.PathPoints.First(), forward.PathPoints.Last());
+                AssertPoint(reversed.PathPoints.Last(), forward.PathPoints.First());
+                AssertOverlayPoints(reversed.PathPoints);
+                Invoke(control, "RestoreView"); AssertSelection(selectionBefore); AssertAppearance(before, true, true);
                 input.Text = "/LKP103/LKP999";
                 Wait((Task)Invoke(control, "ShowLookupAsync"));
                 Assert(result.Text.Contains("/LKP103") && result.Text.Contains("/LKP999"),
@@ -237,6 +255,31 @@ public sealed partial class PathFinderSmoke
                     && !Field<PathVisualization>(control, "visualization").IsShown && RoutePathOverlay.DisplayedPoints.Count == 0,
                     "SECONDARY-only input produced an empty successful or partial visualization.");
             }
+            AssertAppearance(before, true, true);
+        });
+        Check("lookup_ui_single_branched_route_shows_longest_main_span_and_excludes_short_spur", () =>
+        {
+            var before = Snapshot(fixture.Leaves);
+            using (var control = new PathFinderControl())
+            {
+                control.Size = new System.Drawing.Size(800, 700); control.CreateControl();
+                Field<TabControl>(control, "tabs").SelectedIndex = 2;
+                document.CurrentSelection.CopyFrom(new[] { sampleLeaves[0] });
+                var selectionBefore = document.CurrentSelection.SelectedItems.ToArray();
+                Field<TextBox>(control, "lookupInput").Text = "/Secondary/LKP101/SECONDARY";
+                Wait((Task)Invoke(control, "ShowLookupAsync"));
+                var calculated = Field<RouteResult>(control, "lookupResult");
+                Assert(calculated != null && calculated.Success && calculated.RouteText == "/LKP101",
+                    "A single branched route still requires exactly two ends: " + Field<TextBox>(control, "lookupOutput").Text);
+                AssertLookupMainLeaves(control, calculated, 2);
+                AssertNear(calculated.LengthMeters, 8);
+                AssertOverlayPoints(calculated.PathPoints);
+                Assert(RoutePathOverlay.IsShownFor(document), "Single branched route did not show the yellow line.");
+                SavePreview(control, "pathfinder-lookup-single-branch-preview.png");
+                Invoke(control, "RestoreView"); AssertSelection(selectionBefore); AssertAppearance(before, true, true);
+                Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Single branched route Restore retained its yellow line.");
+            }
+            AssertAppearance(before, true, true);
         });
         Check("lookup_and_path_keep_separate_capture_identity_maps_and_path_can_be_shown_again", () =>
         {
@@ -291,6 +334,15 @@ public sealed partial class PathFinderSmoke
             Assert(RoutePathOverlay.DisplayedPoints.Count == 0, "Disposed pending lookup left a yellow overlay.");
             AssertSelection(selectionBefore);
         });
+    }
+
+    private void AssertLookupMainLeaves(PathFinderControl control, RouteResult result, int expectedCount)
+    {
+        var session = Field<RoutingSession>(control, "lookupSession");
+        var selected = result.SegmentIds.Select(id => session.SegmentItems[id]).Distinct().ToArray();
+        Assert(selected.Length == expectedCount && selected.All(item => !item.AncestorsAndSelf.Any(owner => owner.DisplayName == "Tube LKP off branch")),
+            "Lookup included an unnecessary branch or omitted a main-route leaf.");
+        AssertSelection(selected);
     }
 
     private sealed class LookupFixture

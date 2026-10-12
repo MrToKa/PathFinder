@@ -48,6 +48,13 @@ public sealed partial class PathFinderSmoke : AddInPlugin
                 TestLargeModelBackgroundTransparency(geometry);
                 return checks.Any(check => !(bool)check["passed"]) ? 1 : 0;
             }
+            if (parameters.Length > 1 && parameters[1] == "path-lookup-routes")
+            {
+                geometry = new List<ModelItem>();
+                if (parameters.Length != 3) throw new InvalidOperationException("Provide a local lookup route specification file.");
+                TestRequestedPathLookup(parameters[2]);
+                return checks.Any(check => !(bool)check["passed"]) ? 1 : 0;
+            }
             geometry = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf.Where(item => item.HasGeometry).ToList();
             if (parameters.Length > 1 && parameters[1] == "extract-model")
             {

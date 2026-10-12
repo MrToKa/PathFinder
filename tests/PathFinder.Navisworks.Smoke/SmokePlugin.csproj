@@ -20,6 +20,7 @@
     <Reference Include="System.Windows.Forms" /><Reference Include="System.Web.Extensions" />
     <Compile Include="SmokePlugin.cs" />
     <Compile Include="LookupSmoke.cs" />
+    <Compile Include="RequestedLookupSmoke.cs" />
   </ItemGroup>
   <Target Name="CheckHostReferences" BeforeTargets="ResolveReferences">
     <Error Condition="!Exists('$(NavisworksInstallDir)\Autodesk.Navisworks.Api.dll')" Text="Pass NavisworksInstallDir for the Manage 2027 installation." />
