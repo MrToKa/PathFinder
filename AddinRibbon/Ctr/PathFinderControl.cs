@@ -13,6 +13,7 @@ namespace AddinRibbon.Ctr
     public sealed class PathFinderControl : UserControl
     {
         private readonly RoutingSession session = new RoutingSession();
+        private readonly RoutingSession lookupSession = new RoutingSession();
         private readonly PathVisualization visualization = new PathVisualization();
         private readonly TabControl tabs = new TabControl { Dock = DockStyle.Fill };
         private readonly DataGridView rules = new DataGridView();
@@ -42,6 +43,15 @@ namespace AddinRibbon.Ctr
         private readonly Button backgroundTransparency = MakeButton("Apply transparency");
         private readonly Button restoreTransparency = MakeButton("0% transparency");
         private readonly Button cancel = MakeButton("Cancel");
+        private readonly TextBox lookupInput = new TextBox { Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Vertical, Height = 95 };
+        private readonly TextBox lookupOutput = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false };
+        private readonly Button lookupShow = MakeButton("Show path");
+        private readonly Button lookupRestore = MakeButton("Restore view");
+        private readonly Button lookupCancel = MakeButton("Cancel");
+        private readonly Label lookupGap = new Label { AutoSize = true, Dock = DockStyle.Fill };
+        private RouteResult lookupResult;
+        private int lookupResultRevision;
+        private bool lookupShown;
         private Document selectionDocument;
         private CancellationTokenSource operation;
         private ModelItem pickedFrom, pickedTo, resolvedFrom, resolvedTo;
@@ -63,15 +73,18 @@ namespace AddinRibbon.Ctr
             Font = new Font("Segoe UI", 9);
             BuildRoutesTab();
             BuildPathTab();
+            BuildLookupTab();
             Controls.Add(tabs);
             Controls.Add(status);
             session.Changed += SessionChanged;
+            lookupSession.Changed += LookupSessionChanged;
             AttachSelectionEvents();
             knownModelRevision = session.ModelRevision;
             from.TextChanged += InputChanged;
             to.TextChanged += InputChanged;
             cableType.SelectedIndexChanged += InputChanged;
             gap.ValueChanged += InputChanged;
+            lookupInput.TextChanged += (s, e) => InvalidateLookupResult();
             secondaryDistance.ValueChanged += SecondaryDistanceChanged;
             verticalApproach.CheckedChanged += InputChanged;
             connectionSpare.ValueChanged += DesignInputChanged;
@@ -95,6 +108,9 @@ namespace AddinRibbon.Ctr
             remove.Click += (s, e) => RemoveRules();
             calculate.Click += async (s, e) => await CalculateAsync();
             show.Click += (s, e) => ShowPath();
+            lookupShow.Click += async (s, e) => await ShowLookupAsync();
+            lookupRestore.Click += (s, e) => RestoreView();
+            lookupCancel.Click += (s, e) => operation?.Cancel();
             restore.Click += (s, e) => RestoreView();
             backgroundTransparency.Click += async (s, e) => await ApplyTransparencyAsync();
             restoreTransparency.Click += async (s, e) => await RestoreTransparencyAsync();
@@ -253,6 +269,101 @@ namespace AddinRibbon.Ctr
             layout.Controls.Add(output, 0, 6); page.Controls.Add(layout); tabs.TabPages.Add(page);
         }
 
+        private void BuildLookupTab()
+        {
+            var page = new TabPage("Path lookup") { AutoScroll = true };
+            var layout = CreateLayout(5);
+            layout.Dock = DockStyle.Top;
+            lookupInput.MinimumSize = new Size(0, 95);
+            lookupOutput.MinimumSize = new Size(0, 120);
+            bool sizing = false;
+            Action size = () =>
+            {
+                if (sizing || page.IsDisposed || page.Disposing || layout.IsDisposed || layout.Disposing) return;
+                sizing = true;
+                try
+                {
+                    int minimum = layout.GetRowHeights().Take(4).Sum() + layout.Padding.Vertical
+                        + lookupOutput.MinimumSize.Height + lookupOutput.Margin.Vertical;
+                    layout.MinimumSize = new Size(0, minimum);
+                    layout.Height = Math.Max(page.ClientSize.Height, minimum);
+                }
+                finally { sizing = false; }
+            };
+            layout.Layout += (s, e) => size(); page.SizeChanged += (s, e) => size();
+            layout.Controls.Add(new Label { Text = "Paste an ordered route, for example /SECONDARY/C135/C134/C133. Visible logical routes are used; all /SECONDARY markers are ignored. No Routes assignments are required.",
+                AutoSize = true, Dock = DockStyle.Fill }, 0, 0);
+            layout.Controls.Add(lookupInput, 0, 1);
+            UpdateLookupGap(); layout.Controls.Add(lookupGap, 0, 2);
+            var commands = Flow(); commands.Controls.AddRange(new Control[] { lookupShow, lookupRestore, lookupCancel });
+            layout.Controls.Add(commands, 0, 3); layout.Controls.Add(lookupOutput, 0, 4);
+            page.Controls.Add(layout); tabs.TabPages.Add(page);
+        }
+
+        private void UpdateLookupGap()
+        {
+            lookupGap.Text = "Connection gap: " + gap.Value.ToString("F2") + " m (current setting in Path).";
+        }
+
+        private void LookupSessionChanged(object sender, EventArgs e)
+        {
+            if (busy) operation?.Cancel();
+            InvalidateLookupResult();
+        }
+
+        private void InvalidateLookupResult()
+        {
+            lookupResult = null; lookupOutput.Clear();
+            if (lookupShown) RestoreView();
+            UpdateButtons();
+        }
+
+        private async Task ShowLookupAsync()
+        {
+            if (busy) return;
+            InvalidateLookupResult(); RestoreView();
+            StartOperation("Finding visible routes from the entered path...");
+            int revision = lookupSession.Revision;
+            try
+            {
+                var token = operation.Token;
+                var codes = RouteLookupCalculator.Parse(lookupInput.Text);
+                var options = new RoutingOptions { ConnectionToleranceMeters = (double)gap.Value };
+                var segments = await lookupSession.CaptureLookupSegmentsAsync(codes, token);
+                if (!IsDisposed) status.Text = "Following the entered route through " + segments.Count + " geometry leaves...";
+                var calculated = await Task.Run(() => RouteLookupCalculator.Calculate(segments, codes, options, token), token);
+                token.ThrowIfCancellationRequested();
+                if (IsDisposed || revision != lookupSession.Revision) return;
+                if (!calculated.Success) { lookupOutput.Text = status.Text = calculated.Message; return; }
+                if (!lookupSession.AreCapturedSegmentsCurrent())
+                    throw new InvalidOperationException("Route geometry changed. Press Show path again.");
+                visualization.ShowRoute(lookupSession.Document, calculated.SegmentIds.Select(id => lookupSession.SegmentItems[id]));
+                RoutePathOverlay.Show(lookupSession.Document, calculated.PathPoints);
+                lookupShown = true; lookupResult = calculated; lookupResultRevision = revision;
+                lookupOutput.Text = calculated.RouteText + Environment.NewLine + Environment.NewLine
+                    + "Approximate route length: " + calculated.LengthMeters.ToString("F3") + " m" + Environment.NewLine
+                    + "Connection gap: " + options.ConnectionToleranceMeters.ToString("F2") + " m (from Path)" + Environment.NewLine
+                    + "Connection gaps: " + calculated.ConnectionGapCount + Environment.NewLine
+                    + "Connection gap length: " + calculated.ConnectionGapLengthMeters.ToString("F3") + " m" + Environment.NewLine
+                    + "Geometry leaves used: " + calculated.SegmentIds.Distinct().Count()
+                    + (lookupSession.FallbackBends > 0 || lookupSession.FallbackStraights > 0 ? Environment.NewLine
+                        + "Geometry review: " + lookupSession.FallbackBends + " bend(s) and " + lookupSession.FallbackStraights
+                        + " straight(s) use a bounding-box approximation." : "")
+                    + (lookupSession.FallbackClearances > 0 ? Environment.NewLine + "Connection gap review: "
+                        + lookupSession.FallbackClearances + " tray(s) use approximate centreline gaps." : "");
+                status.Text = "Entered path selected in Selection Tree. Cable line: yellow.";
+            }
+            catch (OperationCanceledException)
+            {
+                if (!IsDisposed) { RestoreView(); lookupOutput.Text = status.Text = "Path lookup cancelled."; }
+            }
+            catch (Exception e)
+            {
+                if (!IsDisposed) { RestoreView(); lookupOutput.Text = status.Text = e.Message; }
+            }
+            finally { FinishOperation(); }
+        }
+
         private void DesignInputChanged(object sender, EventArgs e)
         {
             var field = sender as NumericUpDown;
@@ -339,6 +450,7 @@ namespace AddinRibbon.Ctr
             if (swapping) return;
             if (sender == from) pickedFrom = null;
             if (sender == to) pickedTo = null;
+            if (sender == gap) { UpdateLookupGap(); InvalidateLookupResult(); }
             InvalidateResult();
         }
         private void SessionChanged(object sender, EventArgs e)
@@ -357,7 +469,8 @@ namespace AddinRibbon.Ctr
         private void InvalidateResult()
         {
             result = null; resolvedFrom = resolvedTo = null; output.Clear();
-            RestoreView(); UpdateButtons();
+            if (!lookupShown) RestoreView();
+            UpdateButtons();
         }
 
         private async Task CalculateAsync()
@@ -423,6 +536,7 @@ namespace AddinRibbon.Ctr
                     return;
                 }
                 visualization.Show(session.Document, result.SegmentIds.Select(id => session.SegmentItems[id]), resolvedFrom, resolvedTo);
+                lookupShown = false;
                 RoutePathOverlay.Show(session.Document, result.PathPoints);
                 status.Text = "Path selected in Selection Tree. Cable line: yellow. From: green. To: orange.";
             }
@@ -431,6 +545,7 @@ namespace AddinRibbon.Ctr
         }
         private void RestoreView()
         {
+            lookupShown = false;
             RoutePathOverlay.Clear();
             try { visualization.Restore(); }
             catch (Exception e) { status.Text = "Could not restore view: " + e.Message; }
@@ -495,7 +610,7 @@ namespace AddinRibbon.Ctr
         private void ReversePath()
         {
             if (busy) return;
-            bool wasShown = visualization.IsShown;
+            bool wasShown = visualization.IsShown && !lookupShown;
             swapping = true;
             try
             {
@@ -528,6 +643,10 @@ namespace AddinRibbon.Ctr
             backgroundTransparency.Enabled = !busy && visualization.IsPathSelected
                 && visualization.AppliedBackgroundTransparency != (double)backgroundTransparencyPercent.Value / 100.0;
             restoreTransparency.Enabled = !busy && visualization.HasBackgroundTransparency;
+            lookupInput.Enabled = !busy;
+            lookupShow.Enabled = !busy && !string.IsNullOrWhiteSpace(lookupInput.Text);
+            lookupRestore.Enabled = !busy && lookupShown && visualization.IsShown;
+            lookupCancel.Enabled = busy;
         }
         protected override void Dispose(bool disposing)
         {
@@ -536,6 +655,7 @@ namespace AddinRibbon.Ctr
                 approachHint.Dispose(); operation?.Cancel();
                 DetachSelectionEvents();
                 session.Changed -= SessionChanged; session.Dispose(); RoutePathOverlay.Clear(); visualization.Dispose();
+                lookupSession.Changed -= LookupSessionChanged; lookupSession.Dispose();
             }
             base.Dispose(disposing);
         }

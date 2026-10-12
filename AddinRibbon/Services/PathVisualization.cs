@@ -47,26 +47,36 @@ namespace AddinRibbon.Services
 
         public void Show(Document document, IEnumerable<ModelItem> pathLeaves, ModelItem from, ModelItem to)
         {
+            if (from == null) throw new ArgumentNullException(nameof(from));
+            if (to == null) throw new ArgumentNullException(nameof(to));
+            ShowCore(document, pathLeaves, from, to);
+        }
+
+        public void ShowRoute(Document document, IEnumerable<ModelItem> pathLeaves)
+        {
+            ShowCore(document, pathLeaves, null, null);
+        }
+
+        private void ShowCore(Document document, IEnumerable<ModelItem> pathLeaves, ModelItem from, ModelItem to)
+        {
             VerifyThread();
             if (_disposed) throw new ObjectDisposedException(nameof(PathVisualization));
             if (document == null) throw new ArgumentNullException(nameof(document));
             if (document.IsDisposed || document.IsClear)
                 throw new InvalidOperationException("Open a model before showing a path.");
             if (pathLeaves == null) throw new ArgumentNullException(nameof(pathLeaves));
-            if (from == null) throw new ArgumentNullException(nameof(from));
-            if (to == null) throw new ArgumentNullException(nameof(to));
 
             Restore();
 
             // Validate document membership before changing appearance or selection.
-            document.Models.CreatePathId(from);
-            document.Models.CreatePathId(to);
+            if (from != null) document.Models.CreatePathId(from);
+            if (to != null) document.Models.CreatePathId(to);
             var route = pathLeaves.Where(item => item != null).Distinct().ToList();
             foreach (var item in route) document.Models.CreatePathId(item);
 
             var routeGeometry = GeometryOf(route);
-            var fromGeometry = GeometryOf(new[] { from });
-            var toGeometry = GeometryOf(new[] { to });
+            var fromGeometry = GeometryOf(from == null ? new ModelItem[0] : new[] { from });
+            var toGeometry = GeometryOf(to == null ? new ModelItem[0] : new[] { to });
             var commonGeometry = new HashSet<ModelItem>(fromGeometry);
             commonGeometry.IntersectWith(toGeometry);
             var highlighted = new HashSet<ModelItem>(routeGeometry);
@@ -80,7 +90,7 @@ namespace AddinRibbon.Services
             _materials = snapshots;
             _selectionBefore = document.CurrentSelection.SelectedItems.ToList();
             _selectedPath = new HashSet<ModelItem>(route);
-            _protectedRoots = route.Concat(new[] { from, to }).Distinct().ToList();
+            _protectedRoots = route.Concat(new[] { from, to }.Where(item => item != null)).Distinct().ToList();
             _protectedGeometry = highlighted;
             try
             {

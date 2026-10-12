@@ -17,7 +17,7 @@ using NApp = Autodesk.Navisworks.Api.Application;
 
 [Plugin("PathFinderSmoke", "TEST", DisplayName = "Isolated PathFinder smoke")]
 [AddInPlugin(AddInLocation.None)]
-public sealed class PathFinderSmoke : AddInPlugin
+public sealed partial class PathFinderSmoke : AddInPlugin
 {
     private readonly List<Dictionary<string, object>> checks = new List<Dictionary<string, object>>();
     private string output;
@@ -48,6 +48,13 @@ public sealed class PathFinderSmoke : AddInPlugin
                 TestLargeModelBackgroundTransparency(geometry);
                 return checks.Any(check => !(bool)check["passed"]) ? 1 : 0;
             }
+            if (parameters.Length > 1 && parameters[1] == "path-lookup-routes")
+            {
+                geometry = new List<ModelItem>();
+                if (parameters.Length != 3) throw new InvalidOperationException("Provide a local lookup route specification file.");
+                TestRequestedPathLookup(parameters[2]);
+                return checks.Any(check => !(bool)check["passed"]) ? 1 : 0;
+            }
             geometry = document.Models.CreateCollectionFromRootItems().DescendantsAndSelf.Where(item => item.HasGeometry).ToList();
             if (parameters.Length > 1 && parameters[1] == "extract-model")
             {
@@ -56,6 +63,11 @@ public sealed class PathFinderSmoke : AddInPlugin
             }
             var leaves = geometry.Where(item => !item.Children.Any() && !item.BoundingBox().IsEmpty).ToList();
             if (leaves.Count < 5) throw new InvalidOperationException("Smoke sample must have at least five geometry leaves.");
+            if (parameters.Length > 1 && parameters[1] == "path-lookup")
+            {
+                TestPathLookup(leaves);
+                return checks.Any(check => !(bool)check["passed"]) ? 1 : 0;
+            }
             TestVisualization(leaves);
             TestPathSelection(leaves);
             TestBackgroundTransparency(leaves);
@@ -64,6 +76,7 @@ public sealed class PathFinderSmoke : AddInPlugin
             TestCableOverlay();
             TestControl();
             TestControlFlow(leaves);
+            TestPathLookup(leaves);
         }
         catch (Exception error)
         {
@@ -1424,7 +1437,8 @@ public sealed class PathFinderSmoke : AddInPlugin
                 control.PerformLayout();
                 var descendants = ControlsOf(control).ToList();
                 var tabs = descendants.OfType<TabControl>().Single();
-                Assert(tabs.TabPages.Count == 2 && tabs.TabPages[0].Text == "Routes" && tabs.TabPages[1].Text == "Path", "Expected Routes and Path tabs.");
+                Assert(tabs.TabPages.Count == 3 && tabs.TabPages[0].Text == "Routes" && tabs.TabPages[1].Text == "Path"
+                    && tabs.TabPages[2].Text == "Path lookup", "Expected Routes, Path and Path lookup tabs.");
                 AssertManualMode(control);
                 Assert(descendants.OfType<Button>().Single(item => item.Text == "Calculate path").Enabled, "Manual Calculate path disabled.");
                 Assert((string)descendants.OfType<ComboBox>().Single().SelectedItem == "LV", "Cable type default is not LV.");
@@ -1672,7 +1686,7 @@ public sealed class PathFinderSmoke : AddInPlugin
                     + ", grid=" + grid.Size + ", grid bounds=" + grid.Bounds
                     + ", row heights=" + string.Join(",", layout.GetRowHeights()) + ".");
             }
-            else
+            else if (index == 1)
             {
                 Assert(Field<TextBox>(control, "from").Width >= 100 && Field<TextBox>(control, "to").Width >= 100,
                     "From or To field collapsed after native pane resize.");
@@ -1712,6 +1726,18 @@ public sealed class PathFinderSmoke : AddInPlugin
                 Assert(page.ClientRectangle.IntersectsWith(BoundsRelativeTo(pathOutput, page)),
                     "The result remains inaccessible after scrolling the narrow pane.");
                 page.AutoScrollPosition = System.Drawing.Point.Empty;
+            }
+            else
+            {
+                foreach (string field in new[] { "lookupInput", "lookupShow", "lookupRestore", "lookupCancel", "lookupOutput" })
+                {
+                    var item = Field<Control>(control, field);
+                    page.ScrollControlIntoView(item); System.Windows.Forms.Application.DoEvents();
+                    Assert(page.ClientRectangle.IntersectsWith(BoundsRelativeTo(item, page)), "Lookup control is inaccessible: " + field);
+                    if (item is TextBox) Assert(item.Width >= 100 && item.Height >= 60, "Lookup text area collapsed: " + field);
+                }
+                page.AutoScrollPosition = System.Drawing.Point.Empty;
+                SavePreview(control, "pathfinder-lookup-" + host.ClientSize.Width + "x" + host.ClientSize.Height + ".png");
             }
         }
     }

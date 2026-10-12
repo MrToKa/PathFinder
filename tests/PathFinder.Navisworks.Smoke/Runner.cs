@@ -10,15 +10,21 @@ internal static class RunNavisworksSmoke
     [STAThread]
     public static int Main(string[] args)
     {
-        if (args.Length < 5 || args.Length > 6)
+        if (args.Length < 5 || args.Length > 7)
         {
-            Console.Error.WriteLine("Usage: PathFinder.Navisworks.SmokeRunner.exe <Manage-install-directory> <model> <installed-AddinRibbon.dll> <SmokePlugin.dll> <results.json> [extract-model|background-transparency]");
+            Console.Error.WriteLine("Usage: PathFinder.Navisworks.SmokeRunner.exe <Manage-install-directory> <model> <installed-AddinRibbon.dll> <SmokePlugin.dll> <results.json> [extract-model|background-transparency|path-lookup|path-lookup-routes] [lookup-spec.json]");
             return 2;
         }
         install = Path.GetFullPath(args[0]);
-        if (args.Length == 6 && args[5] != "extract-model" && args[5] != "background-transparency")
+        if (args.Length >= 6 && args[5] != "extract-model" && args[5] != "background-transparency" && args[5] != "path-lookup" && args[5] != "path-lookup-routes")
         {
-            Console.Error.WriteLine("The optional mode must be extract-model or background-transparency.");
+            Console.Error.WriteLine("The optional mode must be extract-model, background-transparency, path-lookup or path-lookup-routes.");
+            return 2;
+        }
+        if ((args.Length == 7 && args[5] != "path-lookup-routes")
+            || (args.Length == 6 && args[5] == "path-lookup-routes"))
+        {
+            Console.Error.WriteLine("path-lookup-routes requires exactly one specification file.");
             return 2;
         }
         foreach (int index in new[] { 1, 2, 3 })
@@ -27,6 +33,11 @@ internal static class RunNavisworksSmoke
             if (!File.Exists(args[index])) { Console.Error.WriteLine("Missing input: " + args[index]); return 2; }
         }
         args[4] = Path.GetFullPath(args[4]);
+        if (args.Length == 7)
+        {
+            args[6] = Path.GetFullPath(args[6]);
+            if (!File.Exists(args[6])) { Console.Error.WriteLine("Missing lookup specification file."); return 2; }
+        }
         Directory.CreateDirectory(Path.GetDirectoryName(args[4]));
         AppDomain.CurrentDomain.AssemblyResolve += (sender, arguments) =>
         {
@@ -49,7 +60,8 @@ internal static class RunNavisworksSmoke
             host.AddPluginAssembly(args[2]);
             host.AddPluginAssembly(args[3]);
             Console.WriteLine("Running smoke checks inside Navisworks.");
-            int result = host.ExecuteAddInPlugin("PathFinderSmoke.TEST", args.Length > 5 ? new[] { args[4], args[5] } : new[] { args[4] });
+            int result = host.ExecuteAddInPlugin("PathFinderSmoke.TEST", args.Length == 7 ? new[] { args[4], args[5], args[6] }
+                : args.Length > 5 ? new[] { args[4], args[5] } : new[] { args[4] });
             Console.WriteLine("Smoke plugin exit code: " + result);
             return result;
         }

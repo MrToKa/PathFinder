@@ -29,6 +29,17 @@ namespace AddinRibbon.Routing
             return RouteCodeParser.Parse(names.LastOrDefault(name => !string.IsNullOrWhiteSpace(name)));
         }
 
+        /// <summary>Identity of the same logical owner used by Resolve, or -1 without an explicit route code.</summary>
+        public static int OwnerIndex(IReadOnlyList<string> leafToRootNames)
+        {
+            string code;
+            for (int i = 0; i < leafToRootNames.Count; i++)
+                if (!IsComponent(leafToRootNames[i]) && RouteCodeParser.TryParseNamedCode(leafToRootNames[i], out code)) return i;
+            for (int i = 0; i < leafToRootNames.Count; i++)
+                if (RouteCodeParser.TryParseNamedCode(leafToRootNames[i], out code)) return i;
+            return -1;
+        }
+
         private static bool IsComponent(string name)
         {
             return Component.IsMatch(name ?? "") || RouteCodeParser.IsQualifiedComponentName(name);

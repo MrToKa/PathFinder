@@ -50,6 +50,7 @@ internal static class Program
             MeshClearanceTests.Run(Run);
             DesignLengthTests.Run(Run);
             RouteNameResolverTests.Run(Run);
+            RouteLookupTests.Run(Run);
             if (args.Length > 0) Run("Excel report tray code fixtures", () => ExcelCodes(args[0]));
             Console.WriteLine("All " + passed + " routing regression checks passed.");
             return 0;

@@ -23,7 +23,7 @@ namespace AddinRibbon.Services
     }
 
     // ModelItem operations stay on the host UI thread; only value snapshots go to workers.
-    public sealed class RoutingSession : IDisposable
+    public sealed partial class RoutingSession : IDisposable
     {
         public const string SelectedUnnamedObjectLabel = "(selected unnamed object)";
         private Document document;
@@ -92,6 +92,7 @@ namespace AddinRibbon.Services
             ModelRevision++;
             Assignments.Clear();
             nameIndex = null;
+            lookupNameIndex.Clear();
             ClearMeshCache();
             NotifyChanged();
         }
@@ -226,10 +227,15 @@ namespace AddinRibbon.Services
         {
             RequireDocument();
             if (Assignments.Count == 0) throw new InvalidOperationException("Add route objects on the Routes tab first.");
+            return await CaptureSegmentsCoreAsync(Assignments, token);
+        }
+
+        private async Task<List<TraySegment>> CaptureSegmentsCoreAsync(IEnumerable<RouteAssignment> assignments, CancellationToken token)
+        {
             int revision = Revision;
             // The most recently added rule wins when selections overlap.
             var assigned = new Dictionary<ModelItem, RouteAssignment>();
-            foreach (var assignment in Assignments)
+            foreach (var assignment in assignments)
                 foreach (var leaf in assignment.Leaves) assigned[leaf] = assignment;
             double scale = UnitConversion.ScaleFactor(document.Units, Units.Meters);
             var inputs = new List<TrayGeometryInput>();

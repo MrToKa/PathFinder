@@ -16,5 +16,6 @@
     <Compile Include="MeshClearanceTests.cs" />
     <Compile Include="DesignLengthTests.cs" />
     <Compile Include="RouteNameResolverTests.cs" />
+    <Compile Include="RouteLookupTests.cs" />
   </ItemGroup>
 </Project>

@@ -12,7 +12,7 @@ namespace AddinRibbon.Routing
     /// candidate pieces, then cross-tray edges join analytical closest contacts only.
     /// Vertices, endpoint projections and contacts retain the complete polyline length.
     /// </summary>
-    public sealed class RouteCalculator
+    public sealed partial class RouteCalculator
     {
         /// <summary>
         /// A cross-tray gap of at most one micrometre is treated as numerical contact
