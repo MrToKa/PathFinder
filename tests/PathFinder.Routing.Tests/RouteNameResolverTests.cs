@@ -31,6 +31,9 @@ internal static class RouteNameResolverTests
             Equal(pair[1], RouteCodeParser.Parse(pair[0]));
         string code;
         Assert(RouteCodeParser.TryParseNamedCode("/5LD04", out code), "Digit-leading parent was ignored.");
+        Assert(RouteCodeParser.TryParseNamedCode(" 5ld04 ", out code) && code == "/5LD04", "A bare logical parent code was ignored.");
+        Assert(RouteNameResolver.OwnerIndex(new[] { "Tube /B1", "5LD04", "/ZONE2" }) == 1,
+            "Native lookup owner identity differs from the logical parent label.");
         Assert(!RouteCodeParser.TryParseNamedCode("/1234", out code), "An arbitrary number became a route code.");
     }
 

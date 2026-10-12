@@ -12,13 +12,13 @@ internal static class RunNavisworksSmoke
     {
         if (args.Length < 5 || args.Length > 6)
         {
-            Console.Error.WriteLine("Usage: PathFinder.Navisworks.SmokeRunner.exe <Manage-install-directory> <model> <installed-AddinRibbon.dll> <SmokePlugin.dll> <results.json> [extract-model|background-transparency]");
+            Console.Error.WriteLine("Usage: PathFinder.Navisworks.SmokeRunner.exe <Manage-install-directory> <model> <installed-AddinRibbon.dll> <SmokePlugin.dll> <results.json> [extract-model|background-transparency|path-lookup]");
             return 2;
         }
         install = Path.GetFullPath(args[0]);
-        if (args.Length == 6 && args[5] != "extract-model" && args[5] != "background-transparency")
+        if (args.Length == 6 && args[5] != "extract-model" && args[5] != "background-transparency" && args[5] != "path-lookup")
         {
-            Console.Error.WriteLine("The optional mode must be extract-model or background-transparency.");
+            Console.Error.WriteLine("The optional mode must be extract-model, background-transparency or path-lookup.");
             return 2;
         }
         foreach (int index in new[] { 1, 2, 3 })

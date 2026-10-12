@@ -4,7 +4,7 @@ param(
     [string]$MSBuildPath,
     [string]$ModelPath,
     [string]$OutputDirectory,
-    [ValidateSet('smoke', 'extract-model', 'background-transparency')][string]$Mode = 'smoke',
+    [ValidateSet('smoke', 'extract-model', 'background-transparency', 'path-lookup')][string]$Mode = 'smoke',
     [ValidateRange(30, 300)][int]$TimeoutSeconds = 300,
     [switch]$BuildOnly
 )

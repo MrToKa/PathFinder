@@ -6,6 +6,8 @@ only to make the detached routing core independently executable.
 
 Run from the repository root:
 
+The ordered lookup checks compile the same production contact graph directly. They cover SECONDARY parsing, strict entered route order, unused branches, unambiguous outer ends, closed/disconnected geometry, physical clearance, repeats, reversal, cancellation and bounded graph/state growth. A middle code at a real joint is retained without an artificial out-and-back spur.
+
 ```powershell
 dotnet run --project tests/PathFinder.Routing.Tests/PathFinder.Routing.Tests.csproj
 ```
